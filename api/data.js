@@ -40,6 +40,17 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
+// Normalize email for matching. Apple's @icloud.com, @me.com, and @mac.com
+// addresses are aliases for the same account, so we treat them as equivalent.
+function normalizeEmail(email) {
+  if (!email) return '';
+  const e = String(email).toLowerCase().trim();
+  // Map all three Apple domains to a single canonical form
+  return e
+    .replace(/@me\.com$/, '@icloud.com')
+    .replace(/@mac\.com$/, '@icloud.com');
+}
+
 // All gameboard data lives under the gb: prefix
 const KEYS = {
   players: 'gb:players',
@@ -189,6 +200,7 @@ export default async function handler(req, res) {
       if (action === 'postScoreByEmail') {
         // Used by the Cloudflare Worker that processes inbound emails.
         // Looks up the player by their account email instead of token.
+        // Handles Apple email aliases (icloud/me/mac map to same account).
         const { email, game, score, played_on } = body;
         if (!email || !game || score === undefined || !played_on) {
           return res.status(400).json({ error: 'Missing required fields' });
@@ -198,12 +210,12 @@ export default async function handler(req, res) {
         }
 
         const players = await getPlayers();
-        const emailLower = email.toLowerCase().trim();
-        const player = players.find(p => (p.email || '').toLowerCase() === emailLower);
+        const senderNormalized = normalizeEmail(email);
+        const player = players.find(p => normalizeEmail(p.email) === senderNormalized);
         if (!player) {
           // Don't error loudly — this could be spam or a non-user.
           // Return 200 so the Worker doesn't retry.
-          return res.status(200).json({ ok: false, reason: 'unknown_sender' });
+          return res.status(200).json({ ok: false, reason: 'unknown_sender', sender: email });
         }
 
         const scores = await getScores();
