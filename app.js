@@ -66,16 +66,34 @@ function loadDemo() {
 }
 
 async function createPlayer({ name, email }) {
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'createPlayer', name, email })
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to create account');
+  // 15 second timeout so we don't spin forever
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'createPlayer', name, email }),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    let data;
+    try { data = await res.json(); }
+    catch { throw new Error(`Server returned non-JSON response (status ${res.status})`); }
+
+    if (!res.ok) {
+      throw new Error(data.error || `Server error (${res.status})`);
+    }
+    return data.player;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      throw new Error('Request timed out. Check your connection and try again.');
+    }
+    throw err;
   }
-  return data.player;
 }
 
 async function postScore(playerId, game, score, date) {
