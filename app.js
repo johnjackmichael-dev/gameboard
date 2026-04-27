@@ -17,6 +17,9 @@ const state = {
   scores: [],
   players: [],
   modal: null,         // null | 'shortcut' | 'logScore' | 'editProfile'
+  lbMode: 'standings', // 'standings' | 'h2h'
+  h2hA: null,          // player id
+  h2hB: null,          // player id
 };
 
 // ═══════════════════════════════════════════════
@@ -313,10 +316,79 @@ function streak(pid) {
 }
 
 function ranked() {
-  return state.players
+  const rows = state.players
     .map(p => ({ player: p, stats: playerStats(p.id), streak: streak(p.id) }))
-    .filter(r => r.stats)
-    .sort((a, b) => b.stats.winPct - a.stats.winPct || b.stats.wins - a.stats.wins);
+    .filter(r => r.stats);
+
+  if (state.game === 'mini') {
+    // Lower Mini average is better; players without Mini scores go last
+    return rows.sort((a, b) => {
+      const ax = a.stats.miniAvg, bx = b.stats.miniAvg;
+      if (ax === null && bx === null) return 0;
+      if (ax === null) return 1;
+      if (bx === null) return -1;
+      return ax - bx;
+    });
+  }
+  if (state.game === 'maptap') {
+    // Higher Maptap average is better; players without Maptap go last
+    return rows.sort((a, b) => {
+      const ax = a.stats.mapAvg, bx = b.stats.mapAvg;
+      if (ax === null && bx === null) return 0;
+      if (ax === null) return 1;
+      if (bx === null) return -1;
+      return bx - ax;
+    });
+  }
+  // All Games: sort by combined placement points (lower is better — like golf)
+  // For each day in each game, players are ranked. 1st = 1pt, 2nd = 2pt, etc.
+  // Sum across all days. Players with no scores go last.
+  const points = computePlacementPoints();
+  return rows.sort((a, b) => {
+    const ap = points[a.player.id];
+    const bp = points[b.player.id];
+    if (ap == null && bp == null) return 0;
+    if (ap == null) return 1;
+    if (bp == null) return -1;
+    // Average points per scored game, so frequent players aren't penalized
+    return ap.avg - bp.avg;
+  });
+}
+
+// Compute placement points across all days and both games.
+// Returns { playerId: { total, count, avg } } where lower avg = better.
+function computePlacementPoints() {
+  const result = {};
+  state.players.forEach(p => { result[p.id] = { total: 0, count: 0, avg: null }; });
+
+  ['mini', 'maptap'].forEach(game => {
+    const dates = [...new Set(state.scores.filter(s => s.game === game).map(s => s.played_on))];
+    const isMini = game === 'mini';
+    dates.forEach(date => {
+      const dayScores = state.scores.filter(s => s.game === game && s.played_on === date);
+      // Sort: lower is better for Mini, higher is better for Maptap
+      dayScores.sort((a, b) => isMini ? a.score - b.score : b.score - a.score);
+      // Award placement: 1st = 1pt, 2nd = 2pt, ties get the same rank
+      let prevScore = null, prevRank = 0;
+      dayScores.forEach((s, i) => {
+        const rank = (s.score === prevScore) ? prevRank : (i + 1);
+        if (result[s.player_id]) {
+          result[s.player_id].total += rank;
+          result[s.player_id].count += 1;
+        }
+        prevScore = s.score;
+        prevRank = rank;
+      });
+    });
+  });
+
+  // Compute averages
+  Object.keys(result).forEach(id => {
+    if (result[id].count > 0) {
+      result[id].avg = result[id].total / result[id].count;
+    }
+  });
+  return result;
 }
 
 // Find best/worst across all scores in a game
@@ -849,48 +921,222 @@ function renderLeaderboard() {
   if (!r.length) return renderEmptyDashboard();
 
   const isAll = state.game === 'all';
+  const points = isAll ? computePlacementPoints() : null;
+
+  // Mode toggle (Standings vs Head-to-Head) — only useful with 2+ players
+  const modeToggle = state.players.length >= 2 ? `
+    <div class="lb-mode-toggle">
+      <button class="lb-mode-btn ${state.lbMode === 'standings' ? 'on' : ''}" data-lb-mode="standings">Standings</button>
+      <button class="lb-mode-btn ${state.lbMode === 'h2h' ? 'on' : ''}" data-lb-mode="h2h">Head to head</button>
+    </div>
+  ` : '';
+
+  // If H2H mode, render that instead
+  if (state.lbMode === 'h2h') {
+    return `
+      <div class="section-head" style="margin-top:0">
+        <div class="section-title">Leaderboard</div>
+        <span class="section-title" style="color:var(--ink-4)">${state.game === 'all' ? 'All games' : state.game === 'mini' ? 'NYT Mini' : 'Maptap'}</span>
+      </div>
+      ${modeToggle}
+      ${renderH2H()}
+    `;
+  }
+
+  // Helper text for ranking method
+  const sortLabel = isAll
+    ? 'Sorted by placement points · lower is better'
+    : (state.game === 'mini' ? 'Sorted by average time · lower is better' : 'Sorted by average score · higher is better');
 
   return `
     <div class="section-head" style="margin-top:0">
       <div class="section-title">Full standings — ${state.game === 'all' ? 'all games' : state.game === 'mini' ? 'NYT Mini' : 'Maptap'}</div>
-      <span class="section-title" style="color:var(--ink-4)">Sorted by win rate</span>
+      <span class="section-title" style="color:var(--ink-4)">${sortLabel}</span>
     </div>
+
+    ${modeToggle}
 
     <div class="lb-table-wrap">
       <div class="lb-head-row${isAll ? ' lb-head-all' : ''}">
         <span style="text-align:center">#</span>
         <span>Player</span>
-        <span class="right">Win %</span>
-        <span class="right">W–L–T</span>
         ${isAll
-          ? `<span class="right">Avg Mini</span><span class="right">Avg Maptap</span>`
-          : `<span class="right">Avg</span><span class="right">Best</span>`}
+          ? `<span class="right">Pts</span><span class="right">Avg Mini</span><span class="right">Avg Maptap</span><span class="right">W–L</span>`
+          : `<span class="right">Avg</span><span class="right">Best</span><span class="right">Scores</span><span class="right">W–L</span>`}
       </div>
       ${r.map((row, i) => {
         const { player: p, stats: s, streak: str } = row;
         const rankCls = i === 0 ? 'r1' : i === 1 ? 'r2' : i === 2 ? 'r3' : '';
         const rowCls = i === 0 ? 'lb-row-full first' : 'lb-row-full';
-        const lastTwoCols = isAll
-          ? `<div class="rank-stat muted">${s.miniAvg !== null ? fmtScore(s.miniAvg, 'mini') : '—'}</div>
-             <div class="rank-stat muted">${s.mapAvg !== null ? fmtScore(s.mapAvg, 'maptap') : '—'}</div>`
-          : `<div class="rank-stat muted">${fmtScore(s.avg, state.game)}</div>
-             <div class="rank-stat" style="color:var(--gold-deep);font-weight:600">${fmtScore(s.best, state.game)}</div>`;
+        const cols = isAll
+          ? `<div class="rank-stat primary">${points[p.id] && points[p.id].avg !== null ? points[p.id].avg.toFixed(1) : '—'}</div>
+             <div class="rank-stat muted">${s.miniAvg !== null ? fmtScore(s.miniAvg, 'mini') : '—'}</div>
+             <div class="rank-stat muted">${s.mapAvg !== null ? fmtScore(s.mapAvg, 'maptap') : '—'}</div>
+             <div class="rank-stat">${s.wins}–${s.losses}</div>`
+          : `<div class="rank-stat primary">${fmtScore(s.avg, state.game)}</div>
+             <div class="rank-stat" style="color:var(--gold-deep);font-weight:600">${fmtScore(s.best, state.game)}</div>
+             <div class="rank-stat muted">${s.count}</div>
+             <div class="rank-stat">${s.wins}–${s.losses}</div>`;
         return `<div class="${rowCls}${isAll ? ' lb-row-all' : ''}">
           <div class="rank-num ${rankCls}">${i + 1}</div>
           <div class="rank-player">
             ${avatarHTML(p, 36, 'rank-av')}
             <div class="rank-info">
               <div class="rank-name">${escapeHtml(p.name)}${str >= 2 ? `<span class="streak-tag">${str} streak</span>` : ''}</div>
-              <div class="rank-meta">${s.count} scores</div>
+              <div class="rank-meta">${s.winPct}% win rate</div>
             </div>
           </div>
-          <div class="rank-stat primary">${s.winPct}%</div>
-          <div class="rank-stat">${s.wins}–${s.losses}–${s.ties}</div>
-          ${lastTwoCols}
+          ${cols}
         </div>`;
       }).join('')}
     </div>
   `;
+}
+
+// ═══════════════════════════════════════════════
+// HEAD-TO-HEAD
+// ═══════════════════════════════════════════════
+function renderH2H() {
+  // Default selections: current user + first other player
+  const others = state.players.filter(p => p.id !== state.user.id);
+  if (!state.h2hA) state.h2hA = state.user.id;
+  if (!state.h2hB && others.length) state.h2hB = others[0].id;
+  if (state.h2hA === state.h2hB && others.length) state.h2hB = others[0].id;
+
+  const playerA = state.players.find(p => p.id === state.h2hA);
+  const playerB = state.players.find(p => p.id === state.h2hB);
+
+  if (!playerA || !playerB || state.players.length < 2) {
+    return `<div class="empty">
+      <div class="empty-text">Need at least 2 players for head-to-head.</div>
+      <div class="empty-sub">Once another player joins, you can compare.</div>
+    </div>`;
+  }
+
+  const playerOpts = state.players.map(p =>
+    `<option value="${p.id}">${escapeHtml(p.name)}</option>`
+  ).join('');
+
+  // Compute head-to-head record across the active game filter
+  const h2hStats = computeH2H(playerA.id, playerB.id);
+
+  return `
+    <div class="h2h-pickers">
+      <div class="h2h-picker-side">
+        ${avatarHTML(playerA, 56, 'rank-av')}
+        <select class="h2h-select" id="h2h-a">
+          ${playerOpts.replace(`value="${playerA.id}"`, `value="${playerA.id}" selected`)}
+        </select>
+      </div>
+      <div class="h2h-vs">vs</div>
+      <div class="h2h-picker-side">
+        ${avatarHTML(playerB, 56, 'rank-av')}
+        <select class="h2h-select" id="h2h-b">
+          ${playerOpts.replace(`value="${playerB.id}"`, `value="${playerB.id}" selected`)}
+        </select>
+      </div>
+    </div>
+
+    ${h2hStats.commonDays === 0 ? `
+      <div class="empty" style="margin-top:18px">
+        <div class="empty-text">No shared days yet.</div>
+        <div class="empty-sub">${escapeHtml(playerA.name)} and ${escapeHtml(playerB.name)} need to play the same game on the same day for a head-to-head record to appear.</div>
+      </div>
+    ` : `
+      <div class="h2h-score">
+        <div class="h2h-score-side">
+          <div class="h2h-score-num">${h2hStats.aWins}</div>
+          <div class="h2h-score-name">${escapeHtml(playerA.name)}</div>
+        </div>
+        <div class="h2h-score-mid">
+          <div class="h2h-score-ties">${h2hStats.ties} ${h2hStats.ties === 1 ? 'tie' : 'ties'}</div>
+          <div class="h2h-score-days">${h2hStats.commonDays} ${h2hStats.commonDays === 1 ? 'day' : 'days'} together</div>
+        </div>
+        <div class="h2h-score-side">
+          <div class="h2h-score-num">${h2hStats.bWins}</div>
+          <div class="h2h-score-name">${escapeHtml(playerB.name)}</div>
+        </div>
+      </div>
+
+      ${h2hStats.byGame.mini.commonDays > 0 ? `
+        <div class="h2h-game-card">
+          <div class="h2h-game-title">NYT Mini</div>
+          <div class="h2h-game-row">
+            <div class="h2h-game-side"><strong>${escapeHtml(playerA.name)}</strong> ${h2hStats.byGame.mini.aWins}</div>
+            <div class="h2h-game-mid">${h2hStats.byGame.mini.commonDays} day${h2hStats.byGame.mini.commonDays === 1 ? '' : 's'}${h2hStats.byGame.mini.ties ? ` · ${h2hStats.byGame.mini.ties} tie${h2hStats.byGame.mini.ties === 1 ? '' : 's'}` : ''}</div>
+            <div class="h2h-game-side right">${h2hStats.byGame.mini.bWins} <strong>${escapeHtml(playerB.name)}</strong></div>
+          </div>
+          <div class="h2h-game-row">
+            <div class="h2h-game-side">avg ${fmtScore(h2hStats.byGame.mini.aAvg, 'mini')}</div>
+            <div class="h2h-game-mid"></div>
+            <div class="h2h-game-side right">avg ${fmtScore(h2hStats.byGame.mini.bAvg, 'mini')}</div>
+          </div>
+        </div>
+      ` : ''}
+
+      ${h2hStats.byGame.maptap.commonDays > 0 ? `
+        <div class="h2h-game-card">
+          <div class="h2h-game-title">Maptap</div>
+          <div class="h2h-game-row">
+            <div class="h2h-game-side"><strong>${escapeHtml(playerA.name)}</strong> ${h2hStats.byGame.maptap.aWins}</div>
+            <div class="h2h-game-mid">${h2hStats.byGame.maptap.commonDays} day${h2hStats.byGame.maptap.commonDays === 1 ? '' : 's'}${h2hStats.byGame.maptap.ties ? ` · ${h2hStats.byGame.maptap.ties} tie${h2hStats.byGame.maptap.ties === 1 ? '' : 's'}` : ''}</div>
+            <div class="h2h-game-side right">${h2hStats.byGame.maptap.bWins} <strong>${escapeHtml(playerB.name)}</strong></div>
+          </div>
+          <div class="h2h-game-row">
+            <div class="h2h-game-side">avg ${fmtScore(h2hStats.byGame.maptap.aAvg, 'maptap')}</div>
+            <div class="h2h-game-mid"></div>
+            <div class="h2h-game-side right">avg ${fmtScore(h2hStats.byGame.maptap.bAvg, 'maptap')}</div>
+          </div>
+        </div>
+      ` : ''}
+    `}
+  `;
+}
+
+function computeH2H(aId, bId) {
+  const out = {
+    commonDays: 0, aWins: 0, bWins: 0, ties: 0,
+    byGame: {
+      mini:   { commonDays: 0, aWins: 0, bWins: 0, ties: 0, aAvg: null, bAvg: null },
+      maptap: { commonDays: 0, aWins: 0, bWins: 0, ties: 0, aAvg: null, bAvg: null },
+    }
+  };
+
+  ['mini', 'maptap'].forEach(game => {
+    const isMini = game === 'mini';
+    const aScores = state.scores.filter(s => s.player_id === aId && s.game === game);
+    const bScores = state.scores.filter(s => s.player_id === bId && s.game === game);
+    const aDates = new Set(aScores.map(s => s.played_on));
+    const bDates = new Set(bScores.map(s => s.played_on));
+    const commonDates = [...aDates].filter(d => bDates.has(d));
+
+    let aValSum = 0, bValSum = 0;
+    commonDates.forEach(date => {
+      const a = aScores.find(s => s.played_on === date);
+      const b = bScores.find(s => s.played_on === date);
+      if (!a || !b) return;
+      aValSum += a.score;
+      bValSum += b.score;
+      if (a.score === b.score) {
+        out.byGame[game].ties++;
+        out.ties++;
+      } else if (isMini ? a.score < b.score : a.score > b.score) {
+        out.byGame[game].aWins++;
+        out.aWins++;
+      } else {
+        out.byGame[game].bWins++;
+        out.bWins++;
+      }
+    });
+    out.byGame[game].commonDays = commonDates.length;
+    if (commonDates.length) {
+      out.byGame[game].aAvg = Math.round(aValSum / commonDates.length);
+      out.byGame[game].bAvg = Math.round(bValSum / commonDates.length);
+    }
+    out.commonDays += commonDates.length;
+  });
+
+  return out;
 }
 
 // ═══════════════════════════════════════════════
@@ -1257,6 +1503,17 @@ function bindApp() {
 
   // Game pills
   document.querySelectorAll('.pill').forEach(b => b.onclick = () => { state.game = b.dataset.game; render(); });
+
+  // Leaderboard mode toggle (Standings / Head-to-head)
+  document.querySelectorAll('[data-lb-mode]').forEach(b => {
+    b.onclick = () => { state.lbMode = b.dataset.lbMode; render(); };
+  });
+
+  // Head-to-head player selects
+  const h2hA = document.getElementById('h2h-a');
+  if (h2hA) h2hA.onchange = (e) => { state.h2hA = e.target.value; render(); };
+  const h2hB = document.getElementById('h2h-b');
+  if (h2hB) h2hB.onchange = (e) => { state.h2hB = e.target.value; render(); };
 
   // Header account
   const acct = document.getElementById('hdr-acct');
