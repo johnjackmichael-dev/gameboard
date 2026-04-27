@@ -60,11 +60,6 @@ async function loadData() {
   }
 }
 
-function loadDemo() {
-  // No-op in production. Data comes from the database.
-  // If the DB is empty, the dashboard shows the empty state.
-}
-
 async function createPlayer({ name, email }) {
   // 15 second timeout so we don't spin forever
   const controller = new AbortController();
@@ -132,6 +127,34 @@ async function updatePlayer({ id, name, avatar_url }) {
   }
 }
 
+async function deletePlayer(id) {
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'deletePlayer', id })
+    });
+    return res.ok;
+  } catch (e) {
+    console.error('deletePlayer error:', e);
+    return false;
+  }
+}
+
+async function deleteScoreEntry(scoreId) {
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'deleteScore', id: scoreId })
+    });
+    return res.ok;
+  } catch (e) {
+    console.error('deleteScore error:', e);
+    return false;
+  }
+}
+
 // Compress image to a square ~256x256 JPEG so it's small enough to store in the DB
 function compressImage(dataUrl, callback) {
   const img = new Image();
@@ -195,6 +218,29 @@ function getPlayer(id) { return state.players.find(p => p.id === id); }
 function escapeHtml(s) {
   if (!s) return '';
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Copy text to clipboard with visual feedback on the button
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // Fallback for older browsers / non-HTTPS
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch {}
+    document.body.removeChild(ta);
+  }
+  if (btn) {
+    const original = btn.textContent;
+    btn.textContent = '✓ Copied';
+    btn.disabled = true;
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1500);
+  }
 }
 
 function avatarHTML(p, size = 36, cls = '') {
@@ -374,33 +420,32 @@ function renderShortcutScreen() {
         <div class="auth-mark-text">The Daily Board</div>
       </div>
       <div class="auth-title">You're <em>in</em>, ${escapeHtml(u.name)}.</div>
-      <div class="auth-sub">One last thing — install the iOS shortcut so you can submit scores from the share sheet. Takes one tap.</div>
+      <div class="auth-sub">One quick setup step: save this email as a contact called <strong>Daily Board</strong>. From any game, share to that contact and your score logs automatically — no typing.</div>
 
       <div class="shortcut-step">
-        <div class="shortcut-eyebrow">Step 1 — install</div>
-        <div class="shortcut-title">Tap to install your shortcut</div>
-        <div class="shortcut-desc">Open this page on your iPhone and tap below. Your personal token is already baked in — no copy/paste needed.</div>
-        <a class="shortcut-button" href="#" onclick="installShortcut(event)">
-          Install on iPhone
-          <span style="font-size:16px">→</span>
-        </a>
+        <div class="shortcut-eyebrow">Save this contact</div>
+        <div style="font-family:var(--mono);font-size:18px;color:#fff;font-weight:600;margin:8px 0 14px;word-break:break-all">scores@commonphoebedub.com</div>
+        <a class="shortcut-button" href="#" onclick="copyText('scores@commonphoebedub.com', this);return false;">Copy address</a>
         <div class="shortcut-meta">
-          <span class="shortcut-meta-item">⏱ 1 tap</span>
-          <span class="shortcut-meta-item">📱 iPhone only</span>
-          <span class="shortcut-meta-item">🔒 Your token: ${u.token.slice(0, 8)}…</span>
+          <span class="shortcut-meta-item">📇 Save once</span>
+          <span class="shortcut-meta-item">📤 Share any game</span>
+          <span class="shortcut-meta-item">⚡ Score logs in seconds</span>
         </div>
       </div>
 
       <div class="step-list">
-        <div class="step-list-title">After installing</div>
-        <div class="step"><div class="step-num">1</div><div class="step-text">Finish the <strong>NYT Mini</strong> or <strong>Maptap</strong> as usual</div></div>
-        <div class="step"><div class="step-num">2</div><div class="step-text">Tap the <strong>share button</strong> in the app</div></div>
-        <div class="step"><div class="step-num">3</div><div class="step-text">Tap <strong>"Log to Board"</strong> in the share sheet</div></div>
-        <div class="step"><div class="step-num">4</div><div class="step-text">Done. Score appears on the leaderboard within a minute.</div></div>
+        <div class="step-list-title">How it works</div>
+        <div class="step"><div class="step-num">1</div><div class="step-text">Save <strong>scores@commonphoebedub.com</strong> as a contact called "Daily Board"</div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-text">Finish the <strong>NYT Mini</strong> (or Maptap) as usual</div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-text">Tap <strong>Share → Mail → Daily Board → Send</strong></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-text">Score appears on your dashboard within a minute</div></div>
+      </div>
+
+      <div style="font-size:12.5px;color:var(--ink-3);line-height:1.55;margin-bottom:18px;padding:10px 14px;background:var(--bg);border-radius:8px">
+        💡 Make sure to send from <strong style="color:var(--ink)">${escapeHtml(u.email)}</strong> — that's the email we use to identify you.
       </div>
 
       <button class="btn-primary" id="goto-app">Continue to the board →</button>
-      <div class="auth-foot"><button id="skip-shortcut">I'll set up the shortcut later</button></div>
     </div>
   </div>`;
 }
@@ -411,7 +456,11 @@ function bindAuth() {
   if (state.authMode === 'signin') {
     $('signin-btn').onclick = handleSignIn;
     $('signin-email').onkeydown = e => e.key === 'Enter' && handleSignIn();
-    $('show-signup').onclick = () => { state.authMode = 'signup'; render(); };
+    $('show-signup').onclick = () => {
+      window._pendingPhoto = null;
+      state.authMode = 'signup';
+      render();
+    };
   }
   if (state.authMode === 'signup') {
     $('signup-btn').onclick = handleSignUp;
@@ -449,7 +498,6 @@ function bindAuth() {
   }
   if (state.authMode === 'shortcut') {
     $('goto-app').onclick = () => { state.view = 'app'; render(); };
-    $('skip-shortcut').onclick = () => { state.view = 'app'; render(); };
   }
 }
 
@@ -507,7 +555,8 @@ async function handleSignUp() {
 
 function installShortcut(e) {
   e.preventDefault();
-  alert(`In production this would open:\nshortcuts://import-shortcut?url=https://yourapp.com/shortcut/${state.user.token}.shortcut\n\nThis serves a pre-built iOS shortcut with your token baked in.`);
+  state.modal = 'shortcutGuide';
+  render();
 }
 
 // ═══════════════════════════════════════════════
@@ -884,19 +933,43 @@ function renderAccount() {
     </div>
 
     <div class="settings-card">
-      <div style="font-size:14px;font-weight:600;margin-bottom:6px">iOS Shortcut</div>
-      <div style="font-size:13px;color:var(--ink-3);line-height:1.5;margin-bottom:14px">Submit scores from your iPhone share sheet without opening this site.</div>
-      <button class="btn-primary" id="get-shortcut" style="width:auto">Get my shortcut →</button>
+      <div style="font-size:14px;font-weight:600;margin-bottom:6px">Share scores by email</div>
+      <div style="font-size:13px;color:var(--ink-3);line-height:1.55;margin-bottom:14px">
+        Save the address below as a contact called <strong>"Daily Board"</strong> on your phone.
+        Then from any game (NYT Mini, Maptap), tap <strong>Share → Mail → Daily Board → Send</strong>.
+        Your score lands here in seconds. <strong>Make sure to send from <span style="color:var(--royal)">${escapeHtml(state.user.email)}</span></strong> — that's the email tied to your account.
+      </div>
+
+      <div style="background:var(--gold-bg);border:1px solid rgba(212,169,69,0.3);border-radius:10px;padding:14px 16px;margin-bottom:14px">
+        <div style="font-family:var(--mono);font-size:11px;color:var(--gold-deep);font-weight:600;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:6px">Send scores to</div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-family:var(--mono);font-size:14px;color:var(--ink);font-weight:600">scores@commonphoebedub.com</span>
+          <button class="copy-btn-sm" onclick="copyText('scores@commonphoebedub.com', this)">copy</button>
+        </div>
+      </div>
+
+      <details style="font-size:12.5px;color:var(--ink-3);line-height:1.55">
+        <summary style="cursor:pointer;font-weight:500;color:var(--ink-2);padding:4px 0">How to save it as a contact (1 minute, one time)</summary>
+        <div style="padding:8px 0 0 4px">
+          1. Open the <strong>Contacts</strong> app on your phone<br/>
+          2. Tap <strong>+</strong> to add a new contact<br/>
+          3. Name: <strong>Daily Board</strong><br/>
+          4. Email: <strong>scores@commonphoebedub.com</strong><br/>
+          5. Save<br/><br/>
+          From now on, any game's share button → <strong>Mail</strong> → start typing "Daily" → tap the contact → tap Send. Done.
+        </div>
+      </details>
     </div>
 
     <div class="settings-card">
-      <div style="font-size:14px;font-weight:600;margin-bottom:6px">Manually log a score</div>
-      <div style="font-size:13px;color:var(--ink-3);line-height:1.5;margin-bottom:14px">For when the shortcut isn't available or you want to backfill.</div>
+      <div style="font-size:14px;font-weight:600;margin-bottom:6px">Log manually</div>
+      <div style="font-size:13px;color:var(--ink-3);line-height:1.5;margin-bottom:14px">For backfilling old scores or if the email path isn't working.</div>
       <button class="btn-secondary" id="log-score">Log a score</button>
     </div>
 
     <div class="settings-card">
-      <button class="btn-ghost" id="logout" style="color:var(--loss)">Sign out</button>
+      <button class="btn-ghost" id="logout" style="color:var(--ink-3)">Sign out</button>
+      <button class="btn-ghost" id="delete-account" style="color:var(--loss);margin-left:8px">Delete account</button>
     </div>
   `;
 }
@@ -907,7 +980,9 @@ function renderAccount() {
 function renderModal() {
   if (state.modal === 'logScore') return renderLogScoreModal();
   if (state.modal === 'shortcut') return renderShortcutModal();
+  if (state.modal === 'shortcutGuide') return renderShortcutGuideModal();
   if (state.modal === 'editProfile') return renderEditProfileModal();
+  if (state.modal === 'deleteAccount') return renderDeleteAccountModal();
   return '';
 }
 
@@ -938,7 +1013,7 @@ function renderLogScoreModal() {
       </div>
 
       <div class="field"><label>Date</label>
-        <input id="ls-date" type="date" class="inp" value="${todayStr()}"/>
+        <input id="ls-date" type="date" class="inp" value="${todayStr()}" max="${todayStr()}"/>
       </div>
 
       <button class="btn-primary" id="ls-submit" style="margin-top:8px">Log score</button>
@@ -949,17 +1024,138 @@ function renderLogScoreModal() {
 
 function renderShortcutModal() {
   const u = state.user;
+  const apiUrl = window.location.origin + '/api/data';
   return `<div class="modal-back" id="modal-back">
-    <div class="modal">
+    <div class="modal" style="max-width:560px">
       <button class="modal-x" id="modal-close">×</button>
       <div class="modal-title">Your <em style="font-style:italic;color:var(--royal)">shortcut</em>.</div>
-      <div class="modal-sub">Open this page on your iPhone to install the shortcut. Your token is baked in — submitting scores will be one tap from the share sheet.</div>
-      <div class="shortcut-step">
-        <div class="shortcut-eyebrow">Token: ${u.token.slice(0, 12)}…</div>
-        <div class="shortcut-title">Install on iPhone</div>
-        <div class="shortcut-desc">Tap the button below from your iPhone to add it to Shortcuts.</div>
-        <a class="shortcut-button" href="#" onclick="installShortcut(event)">Install →</a>
+      <div class="modal-sub">Submit scores from your iPhone share sheet. Setup takes about 5 minutes — you only do it once.</div>
+
+      <div class="shortcut-step" style="margin-bottom:14px">
+        <div class="shortcut-eyebrow">Your details</div>
+        <div style="font-family:var(--mono);font-size:12px;color:rgba(255,255,255,0.85);line-height:1.7;margin-top:8px">
+          <div><span style="color:var(--gold)">Name:</span> ${escapeHtml(u.name)}</div>
+          <div><span style="color:var(--gold)">Token:</span> ${u.token}</div>
+          <div><span style="color:var(--gold)">API:</span> ${apiUrl}</div>
+        </div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.6);margin-top:10px;line-height:1.5">Copy these — you'll paste them into the shortcut. Or tap the buttons below to copy them individually.</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
+          <button class="copy-btn" onclick="copyText('${u.token}', this)">Copy token</button>
+          <button class="copy-btn" onclick="copyText('${apiUrl}', this)">Copy API URL</button>
+        </div>
       </div>
+
+      <a class="btn-primary" href="#" onclick="installShortcut(event)" style="display:block;text-align:center;margin-bottom:10px">Show me how to set it up →</a>
+
+      <div style="font-size:12px;color:var(--ink-3);text-align:center;line-height:1.5">After setup, scores submit in one tap from the iOS share sheet — no need to come back to this site.</div>
+    </div>
+  </div>`;
+}
+
+function renderShortcutGuideModal() {
+  const u = state.user;
+  const apiUrl = window.location.origin + '/api/data';
+
+  return `<div class="modal-back" id="modal-back">
+    <div class="modal" style="max-width:600px;max-height:90vh;overflow-y:auto">
+      <button class="modal-x" id="modal-close">×</button>
+      <div class="modal-title">Set up your <em style="font-style:italic;color:var(--royal)">shortcut</em>.</div>
+      <div class="modal-sub">Follow these steps once on your iPhone. Then submitting scores is one tap from the share sheet.</div>
+
+      <div style="background:var(--gold-bg);border:1px solid rgba(212,169,69,0.3);border-radius:10px;padding:14px 16px;margin-bottom:18px">
+        <div style="font-family:var(--mono);font-size:11px;color:var(--gold-deep);font-weight:600;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px">Have these ready</div>
+        <div style="font-family:var(--mono);font-size:12px;color:var(--ink);line-height:1.7;word-break:break-all">
+          <div style="margin-bottom:6px"><strong style="color:var(--royal)">Your token:</strong><br/><span id="tok-text">${u.token}</span> <button class="copy-btn-sm" onclick="copyText('${u.token}', this)">copy</button></div>
+          <div><strong style="color:var(--royal)">API URL:</strong><br/><span id="api-text">${apiUrl}</span> <button class="copy-btn-sm" onclick="copyText('${apiUrl}', this)">copy</button></div>
+        </div>
+      </div>
+
+      <div class="step-list-title" style="margin-bottom:10px">Steps (on your iPhone)</div>
+
+      <div class="guide-step">
+        <div class="guide-num">1</div>
+        <div class="guide-text">
+          <strong>Open the Shortcuts app</strong> (it's pre-installed on iPhone). If you don't have it, download free from the App Store.
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">2</div>
+        <div class="guide-text">
+          Tap the <strong>+</strong> in the top-right to create a new shortcut. Name it <strong>"Log to Board"</strong>.
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">3</div>
+        <div class="guide-text">
+          Tap <strong>Add Action</strong> → search for <strong>"Get Contents of URL"</strong> and add it.
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">4</div>
+        <div class="guide-text">
+          For the URL, paste:<br/>
+          <code style="display:inline-block;background:var(--bg);padding:4px 8px;border-radius:4px;font-size:11.5px;margin-top:4px;word-break:break-all">${apiUrl}</code>
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">5</div>
+        <div class="guide-text">
+          Expand the action's options. Set <strong>Method</strong> to <strong>POST</strong>. Under <strong>Headers</strong>, add:<br/>
+          <span style="font-family:var(--mono);font-size:11.5px;background:var(--bg);padding:2px 6px;border-radius:3px">Content-Type: application/json</span>
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">6</div>
+        <div class="guide-text">
+          Set <strong>Request Body</strong> to <strong>JSON</strong>. Add these fields:
+          <div style="background:var(--bg);padding:10px 12px;border-radius:6px;font-family:var(--mono);font-size:11.5px;margin-top:6px;line-height:1.7">
+            <div><strong>action</strong> = postScore</div>
+            <div><strong>playerId</strong> = ${u.id}</div>
+            <div><strong>game</strong> = mini <em style="color:var(--ink-4)">(or "maptap")</em></div>
+            <div><strong>score</strong> = <em style="color:var(--ink-4)">(your time in seconds, e.g. 47)</em></div>
+            <div><strong>played_on</strong> = <em style="color:var(--ink-4)">(today's date, YYYY-MM-DD)</em></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">7</div>
+        <div class="guide-text">
+          Tap the shortcut's <strong>settings (i icon)</strong> at the bottom. Toggle on <strong>"Show in Share Sheet"</strong>.
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">8</div>
+        <div class="guide-text">
+          Done! Now from the NYT Mini app, tap <strong>Share → Log to Board</strong> after solving.
+        </div>
+      </div>
+
+      <div style="background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-top:18px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:6px">Easier alternative</div>
+        <div style="font-size:12.5px;color:var(--ink-3);line-height:1.5">If the shortcut feels like too much hassle, you can always log scores manually from the <strong>Account</strong> tab. The shortcut is optional — it just makes daily logging faster.</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderDeleteAccountModal() {
+  return `<div class="modal-back" id="modal-back">
+    <div class="modal" style="max-width:440px">
+      <button class="modal-x" id="modal-close">×</button>
+      <div class="modal-title" style="color:var(--loss)">Delete account?</div>
+      <div class="modal-sub">This will permanently remove <strong>${escapeHtml(state.user.name)}</strong> and all of your scores. Other players' scores stay. This can't be undone.</div>
+      <div style="display:flex;gap:8px;margin-top:18px">
+        <button class="btn-secondary" id="del-cancel" style="flex:1">Cancel</button>
+        <button class="btn-primary" id="del-confirm" style="flex:1;background:var(--loss)">Delete forever</button>
+      </div>
+      <div class="auth-msg" id="del-msg"></div>
     </div>
   </div>`;
 }
@@ -1008,9 +1204,11 @@ function bindApp() {
 
   // Account actions
   const editBtn = document.getElementById('edit-profile');
-  if (editBtn) editBtn.onclick = () => { state.modal = 'editProfile'; render(); };
-  const shortcutBtn = document.getElementById('get-shortcut');
-  if (shortcutBtn) shortcutBtn.onclick = () => { state.modal = 'shortcut'; render(); };
+  if (editBtn) editBtn.onclick = () => {
+    window._pendingPhoto = null;
+    state.modal = 'editProfile';
+    render();
+  };
   const logBtn = document.getElementById('log-score');
   if (logBtn) logBtn.onclick = () => { state.modal = 'logScore'; render(); };
   const logoutBtn = document.getElementById('logout');
@@ -1021,6 +1219,8 @@ function bindApp() {
     state.authMode = 'signin';
     render();
   };
+  const delBtn = document.getElementById('delete-account');
+  if (delBtn) delBtn.onclick = () => { state.modal = 'deleteAccount'; render(); };
 
   // Modal bindings
   if (state.modal) {
@@ -1056,29 +1256,72 @@ function bindApp() {
       };
       document.getElementById('ep-save').onclick = handleSaveProfile;
     }
+
+    if (state.modal === 'deleteAccount') {
+      const cancel = document.getElementById('del-cancel');
+      const confirm = document.getElementById('del-confirm');
+      if (cancel) cancel.onclick = () => { state.modal = null; render(); };
+      if (confirm) confirm.onclick = handleDeleteAccount;
+    }
   }
+}
+
+async function handleDeleteAccount() {
+  const msg = document.getElementById('del-msg');
+  msg.className = 'auth-msg'; msg.textContent = 'Deleting...'; msg.style.color = 'var(--ink-3)';
+  const ok = await deletePlayer(state.user.id);
+  if (!ok) {
+    msg.className = 'auth-msg error'; msg.textContent = 'Failed to delete. Try again.';
+    return;
+  }
+  // Clean up local data
+  localStorage.removeItem(`av_${state.user.id}`);
+  localStorage.removeItem('gb_user');
+  state.user = null;
+  state.view = 'auth';
+  state.authMode = 'signin';
+  state.modal = null;
+  await loadData();
+  render();
 }
 
 async function handleLogScore() {
   const game = document.getElementById('ls-game').value;
   const date = document.getElementById('ls-date').value;
   const msg = document.getElementById('ls-msg');
+
+  if (!date) { msg.className = 'auth-msg error'; msg.textContent = 'Pick a date.'; return; }
+  // Don't allow future dates
+  if (date > todayStr()) {
+    msg.className = 'auth-msg error'; msg.textContent = "You can't log a future date.";
+    return;
+  }
+
   let score;
   if (game === 'mini') {
-    const m = document.getElementById('ls-min').value, s = document.getElementById('ls-sec').value;
+    const m = document.getElementById('ls-min').value;
+    const s = document.getElementById('ls-sec').value;
     if (!m && !s) { msg.className = 'auth-msg error'; msg.textContent = 'Enter a time.'; return; }
-    score = (parseInt(m) || 0) * 60 + (parseInt(s) || 0);
+    const mins = parseInt(m) || 0;
+    const secs = parseInt(s) || 0;
+    if (secs >= 60) { msg.className = 'auth-msg error'; msg.textContent = 'Seconds must be 0–59.'; return; }
+    score = mins * 60 + secs;
+    if (score === 0) { msg.className = 'auth-msg error'; msg.textContent = 'Time must be greater than 0.'; return; }
+    if (score > 3600) { msg.className = 'auth-msg error'; msg.textContent = 'That seems too long — under an hour, please.'; return; }
   } else {
     score = document.getElementById('ls-score').value;
     if (!score) { msg.className = 'auth-msg error'; msg.textContent = 'Enter a score.'; return; }
+    score = parseInt(score);
+    if (isNaN(score) || score < 0) { msg.className = 'auth-msg error'; msg.textContent = 'Enter a valid score.'; return; }
   }
+
   msg.className = 'auth-msg'; msg.textContent = 'Saving...'; msg.style.color = 'var(--ink-3)';
   const ok = await postScore(state.user.id, game, score, date);
   if (ok) {
     msg.className = 'auth-msg success'; msg.textContent = '✓ Score logged.';
     setTimeout(() => { state.modal = null; render(); }, 900);
   } else {
-    msg.className = 'auth-msg error'; msg.textContent = 'Error saving.';
+    msg.className = 'auth-msg error'; msg.textContent = 'Error saving. Try again.';
   }
 }
 
@@ -1089,12 +1332,10 @@ async function handleSaveProfile() {
 
   msg.className = 'auth-msg'; msg.textContent = 'Saving...'; msg.style.color = 'var(--ink-3)';
 
-  // Save to database
-  const updated = await updatePlayer({
-    id: state.user.id,
-    name,
-    avatar_url: window._pendingPhoto !== undefined ? window._pendingPhoto : undefined
-  });
+  // Save to database — only send avatar if a new photo was selected
+  const payload = { id: state.user.id, name };
+  if (window._pendingPhoto) payload.avatar_url = window._pendingPhoto;
+  const updated = await updatePlayer(payload);
   if (!updated) {
     msg.className = 'auth-msg error'; msg.textContent = 'Failed to save. Try again.';
     return;
