@@ -1,8 +1,9 @@
 // ═══════════════════════════════════════════════
 // CONFIG
 // ═══════════════════════════════════════════════
-const SUPABASE_URL = 'YOUR_SUPABASE_URL';
-const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+// All data goes through /api/data — a Vercel serverless function
+// that reads/writes to Upstash KV. No keys needed in the browser.
+const API_URL = '/api/data';
 
 // ═══════════════════════════════════════════════
 // STATE
@@ -44,75 +45,57 @@ window.addEventListener('DOMContentLoaded', async () => {
 // DATA
 // ═══════════════════════════════════════════════
 async function loadData() {
-  if (SUPABASE_URL === 'YOUR_SUPABASE_URL') { loadDemo(); return; }
   try {
-    const [pRes, sRes] = await Promise.all([
-      fetch(`${SUPABASE_URL}/rest/v1/players?select=*&order=created_at.asc`, {
-        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
-      }),
-      fetch(`${SUPABASE_URL}/rest/v1/scores?select=*&order=played_on.desc&limit=1000`, {
-        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
-      })
-    ]);
-    state.players = await pRes.json();
-    state.scores = await sRes.json();
-    state.players = state.players.map(p => ({
+    const res = await fetch(API_URL);
+    if (!res.ok) throw new Error('Load failed');
+    const { players, scores } = await res.json();
+    state.players = (players || []).map(p => ({
       ...p, avatar: localStorage.getItem(`av_${p.id}`) || p.avatar_url || null
     }));
-  } catch (e) { console.error(e); }
+    state.scores = scores || [];
+    state.scores.sort((a, b) => b.played_on.localeCompare(a.played_on));
+  } catch (e) {
+    console.error('Load error:', e);
+    // Fallback: keep whatever we had
+  }
 }
 
 function loadDemo() {
-  state.players = [
-    { id: 'p1', name: 'Jack', email: 'jack@example.com', token: 'tok-jack', avatar: null },
-    { id: 'p2', name: 'Phoebe', email: 'phoebe@example.com', token: 'tok-phoebe', avatar: null },
-    { id: 'p3', name: 'Tyler', email: 'tyler@example.com', token: 'tok-tyler', avatar: null },
-  ];
-  state.scores = [];
-  const today = new Date();
-  for (let i = 0; i < 28; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    const ds = d.toISOString().split('T')[0];
-    state.players.forEach(p => {
-      if (Math.random() > 0.1)
-        state.scores.push({ id:`${ds}-${p.id}-mini`, player_id:p.id, game:'mini', score: Math.floor(Math.random()*100)+25, played_on:ds });
-      if (Math.random() > 0.25)
-        state.scores.push({ id:`${ds}-${p.id}-map`, player_id:p.id, game:'maptap', score: Math.floor(Math.random()*350)+650, played_on:ds });
-    });
-  }
-  state.scores.sort((a, b) => b.played_on.localeCompare(a.played_on));
+  // No-op in production. Data comes from the database.
+  // If the DB is empty, the dashboard shows the empty state.
 }
 
 async function createPlayer({ name, email }) {
-  const token = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-  if (SUPABASE_URL === 'YOUR_SUPABASE_URL') {
-    const p = { id: `local-${Date.now()}`, name, email, token, avatar: null };
-    state.players.push(p);
-    return p;
-  }
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/players`, {
-    method:'POST',
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, 'Content-Type':'application/json', Prefer:'return=representation' },
-    body: JSON.stringify({ name, email, token })
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'createPlayer', name, email })
   });
-  return (await res.json())[0];
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to create account');
+  }
+  return data.player;
 }
 
 async function postScore(playerId, game, score, date) {
-  if (SUPABASE_URL === 'YOUR_SUPABASE_URL') {
-    const e = { id:`${Date.now()}`, player_id: playerId, game, score: +score, played_on: date };
-    const idx = state.scores.findIndex(s => s.player_id === playerId && s.game === game && s.played_on === date);
-    if (idx >= 0) state.scores[idx] = e; else state.scores.unshift(e);
-    state.scores.sort((a, b) => b.played_on.localeCompare(a.played_on));
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'postScore',
+        playerId, game, score: parseInt(score), played_on: date
+      })
+    });
+    if (!res.ok) return false;
+    // Reload scores to reflect the new entry
+    await loadData();
     return true;
+  } catch (e) {
+    console.error('postScore error:', e);
+    return false;
   }
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/scores`, {
-    method:'POST',
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, 'Content-Type':'application/json', Prefer:'resolution=merge-duplicates' },
-    body: JSON.stringify({ player_id: playerId, game, score: +score, played_on: date })
-  });
-  return res.ok;
 }
 
 // ═══════════════════════════════════════════════
@@ -426,7 +409,14 @@ async function handleSignUp() {
     msg.className = 'auth-msg error'; msg.textContent = 'That email is already registered.'; return;
   }
   msg.className = 'auth-msg'; msg.textContent = 'Creating your account...'; msg.style.color = 'var(--ink-3)';
-  const player = await createPlayer({ name, email });
+  let player;
+  try {
+    player = await createPlayer({ name, email });
+  } catch (err) {
+    msg.className = 'auth-msg error';
+    msg.textContent = err.message || 'Something went wrong. Try again.';
+    return;
+  }
   if (!player) { msg.className = 'auth-msg error'; msg.textContent = 'Something went wrong. Try again.'; return; }
   if (window._pendingPhoto) {
     localStorage.setItem(`av_${player.id}`, window._pendingPhoto);
