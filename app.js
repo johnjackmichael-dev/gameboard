@@ -276,11 +276,23 @@ function playerStats(pid) {
     });
   });
   const total = wins + losses + ties;
+
+  // Per-game stats — needed for "All Games" leaderboard so we don't average
+  // Mini seconds with Maptap scores into one nonsense number.
+  const miniScores = ps.filter(s => s.game === 'mini').map(s => s.score);
+  const mapScores = ps.filter(s => s.game === 'maptap').map(s => s.score);
+
   return {
     count: ps.length,
     avg: Math.round(vals.reduce((a, b) => a + b, 0) / vals.length),
     best: isMini ? Math.min(...vals) : Math.max(...vals),
     worst: isMini ? Math.max(...vals) : Math.min(...vals),
+    miniAvg: miniScores.length ? Math.round(miniScores.reduce((a, b) => a + b, 0) / miniScores.length) : null,
+    miniBest: miniScores.length ? Math.min(...miniScores) : null,
+    miniCount: miniScores.length,
+    mapAvg: mapScores.length ? Math.round(mapScores.reduce((a, b) => a + b, 0) / mapScores.length) : null,
+    mapBest: mapScores.length ? Math.max(...mapScores) : null,
+    mapCount: mapScores.length,
     wins, losses, ties,
     winPct: total ? Math.round(wins / total * 100) : 0
   };
@@ -674,28 +686,52 @@ function renderDashboard() {
 
   // Stat cards depending on game
   let statCards = '';
+
+  // Helper: today's best score in a given game
+  const todayBestFor = (gameType) => {
+    const today = todayStr();
+    const todayScores = state.scores.filter(s => s.game === gameType && s.played_on === today);
+    if (!todayScores.length) return null;
+    const isMini = gameType !== 'maptap';
+    const best = todayScores.reduce((a, b) => (isMini ? a.score < b.score : a.score > b.score) ? a : b);
+    return { ...best, player: getPlayer(best.player_id) };
+  };
+
+  // Helper: average score across all entries for a game
+  const averageFor = (gameType) => {
+    const gs = state.scores.filter(s => s.game === gameType);
+    if (!gs.length) return null;
+    return Math.round(gs.reduce((a, b) => a + b.score, 0) / gs.length);
+  };
+
   if (state.game === 'mini') {
+    const todayBest = todayBestFor('mini');
+    const avg = averageFor('mini');
     statCards = `
       ${statCard('Best Mini Time', overallBest ? fmtScore(overallBest.score, 'mini') : '—', overallBest?.player?.name, overallBest ? fmtDate(overallBest.played_on) : '', 'blue')}
       ${statCard('Worst Mini Time', overallWorst ? fmtScore(overallWorst.score, 'mini') : '—', overallWorst?.player?.name, overallWorst ? fmtDate(overallWorst.played_on) : '', 'red')}
-      ${statCard('Days Played', totalDays, `${activePlayers} active`, 'all-time', '')}
-      ${statCard('Total Scores', fs.length, 'across players', '', '')}
+      ${statCard("Today's Best", todayBest ? fmtScore(todayBest.score, 'mini') : '—', todayBest?.player?.name || 'No solves yet', '', '')}
+      ${statCard('Average', avg !== null ? fmtScore(avg, 'mini') : '—', 'across all solves', '', '')}
     `;
   } else if (state.game === 'maptap') {
+    const todayBest = todayBestFor('maptap');
+    const avg = averageFor('maptap');
     statCards = `
       ${statCard('Best Maptap', overallBest ? fmtScore(overallBest.score, 'maptap') : '—', overallBest?.player?.name, overallBest ? fmtDate(overallBest.played_on) : '', 'gold')}
       ${statCard('Worst Maptap', overallWorst ? fmtScore(overallWorst.score, 'maptap') : '—', overallWorst?.player?.name, overallWorst ? fmtDate(overallWorst.played_on) : '', 'red')}
-      ${statCard('Days Played', totalDays, `${activePlayers} active`, 'all-time', '')}
-      ${statCard('Total Scores', fs.length, 'across players', '', '')}
+      ${statCard("Today's Best", todayBest ? fmtScore(todayBest.score, 'maptap') : '—', todayBest?.player?.name || 'No scores yet', '', '')}
+      ${statCard('Average', avg !== null ? fmtScore(avg, 'maptap') : '—', 'across all scores', '', '')}
     `;
   } else {
     const bestMini = findExtreme('mini', 'best');
+    const worstMini = findExtreme('mini', 'worst');
     const bestMap = findExtreme('maptap', 'best');
+    const worstMap = findExtreme('maptap', 'worst');
     statCards = `
       ${statCard('Best Mini Time', bestMini ? fmtScore(bestMini.score, 'mini') : '—', bestMini?.player?.name, bestMini ? fmtDate(bestMini.played_on) : '', 'blue')}
+      ${statCard('Worst Mini Time', worstMini ? fmtScore(worstMini.score, 'mini') : '—', worstMini?.player?.name, worstMini ? fmtDate(worstMini.played_on) : '', 'red')}
       ${statCard('Best Maptap', bestMap ? fmtScore(bestMap.score, 'maptap') : '—', bestMap?.player?.name, bestMap ? fmtDate(bestMap.played_on) : '', 'gold')}
-      ${statCard('Days Played', totalDays, `${activePlayers} active`, 'all-time', '')}
-      ${statCard('Total Scores', fs.length, 'across players', '', '')}
+      ${statCard('Worst Maptap', worstMap ? fmtScore(worstMap.score, 'maptap') : '—', worstMap?.player?.name, worstMap ? fmtDate(worstMap.played_on) : '', 'red')}
     `;
   }
 
@@ -774,13 +810,23 @@ function renderRankRow(row, i, preview = false) {
   const { player: p, stats: s, streak: str } = row;
   const rankCls = i === 0 ? 'r1' : i === 1 ? 'r2' : i === 2 ? 'r3' : '';
   const rowCls = i === 0 ? 'rank-row first' : 'rank-row';
+  // Choose the meta line based on which game tab is active
+  let metaLine;
+  if (state.game === 'all') {
+    const parts = [];
+    if (s.miniBest !== null) parts.push(`Mini ${fmtScore(s.miniBest, 'mini')}`);
+    if (s.mapBest !== null) parts.push(`Maptap ${fmtScore(s.mapBest, 'maptap')}`);
+    metaLine = parts.length ? `bests: ${parts.join(' · ')}` : `${s.count} scores`;
+  } else {
+    metaLine = `avg ${fmtScore(s.avg, state.game)} · best ${fmtScore(s.best, state.game)}`;
+  }
   return `<div class="${rowCls}">
     <div class="rank-num ${rankCls}">${i + 1}</div>
     <div class="rank-player">
       ${avatarHTML(p, 36, 'rank-av')}
       <div class="rank-info">
         <div class="rank-name">${escapeHtml(p.name)}${str >= 2 ? `<span class="streak-tag">${str} streak</span>` : ''}</div>
-        <div class="rank-meta">avg ${fmtScore(s.avg, state.game === 'all' ? 'mini' : state.game)} · best ${fmtScore(s.best, state.game === 'all' ? 'mini' : state.game)}</div>
+        <div class="rank-meta">${metaLine}</div>
       </div>
     </div>
     <div class="rank-pct">${s.winPct}<span class="pct-sym">%</span></div>
@@ -802,8 +848,7 @@ function renderLeaderboard() {
   const r = ranked();
   if (!r.length) return renderEmptyDashboard();
 
-  const isMini = state.game !== 'maptap';
-  const fmtFor = (v) => fmtScore(v, state.game === 'all' ? 'mini' : state.game);
+  const isAll = state.game === 'all';
 
   return `
     <div class="section-head" style="margin-top:0">
@@ -812,19 +857,25 @@ function renderLeaderboard() {
     </div>
 
     <div class="lb-table-wrap">
-      <div class="lb-head-row">
+      <div class="lb-head-row${isAll ? ' lb-head-all' : ''}">
         <span style="text-align:center">#</span>
         <span>Player</span>
         <span class="right">Win %</span>
         <span class="right">W–L–T</span>
-        <span class="right">Avg</span>
-        <span class="right">Best</span>
+        ${isAll
+          ? `<span class="right">Avg Mini</span><span class="right">Avg Maptap</span>`
+          : `<span class="right">Avg</span><span class="right">Best</span>`}
       </div>
       ${r.map((row, i) => {
         const { player: p, stats: s, streak: str } = row;
         const rankCls = i === 0 ? 'r1' : i === 1 ? 'r2' : i === 2 ? 'r3' : '';
         const rowCls = i === 0 ? 'lb-row-full first' : 'lb-row-full';
-        return `<div class="${rowCls}">
+        const lastTwoCols = isAll
+          ? `<div class="rank-stat muted">${s.miniAvg !== null ? fmtScore(s.miniAvg, 'mini') : '—'}</div>
+             <div class="rank-stat muted">${s.mapAvg !== null ? fmtScore(s.mapAvg, 'maptap') : '—'}</div>`
+          : `<div class="rank-stat muted">${fmtScore(s.avg, state.game)}</div>
+             <div class="rank-stat" style="color:var(--gold-deep);font-weight:600">${fmtScore(s.best, state.game)}</div>`;
+        return `<div class="${rowCls}${isAll ? ' lb-row-all' : ''}">
           <div class="rank-num ${rankCls}">${i + 1}</div>
           <div class="rank-player">
             ${avatarHTML(p, 36, 'rank-av')}
@@ -835,8 +886,7 @@ function renderLeaderboard() {
           </div>
           <div class="rank-stat primary">${s.winPct}%</div>
           <div class="rank-stat">${s.wins}–${s.losses}–${s.ties}</div>
-          <div class="rank-stat muted">${fmtFor(s.avg)}</div>
-          <div class="rank-stat" style="color:var(--gold-deep);font-weight:600">${fmtFor(s.best)}</div>
+          ${lastTwoCols}
         </div>`;
       }).join('')}
     </div>
