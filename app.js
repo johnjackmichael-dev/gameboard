@@ -455,7 +455,9 @@ function bindAuth() {
 
   if (state.authMode === 'signin') {
     $('signin-btn').onclick = handleSignIn;
-    $('signin-email').onkeydown = e => e.key === 'Enter' && handleSignIn();
+    $('signin-email').onkeydown = (e) => {
+      if (e.key === 'Enter') handleSignIn();
+    };
     $('show-signup').onclick = () => {
       window._pendingPhoto = null;
       state.authMode = 'signup';
@@ -464,7 +466,9 @@ function bindAuth() {
   }
   if (state.authMode === 'signup') {
     $('signup-btn').onclick = handleSignUp;
-    $('signup-email').onkeydown = e => e.key === 'Enter' && handleSignUp();
+    $('signup-email').onkeydown = (e) => {
+      if (e.key === 'Enter') handleSignUp();
+    };
     $('show-signin').onclick = () => { state.authMode = 'signin'; render(); };
     const nameInp = $('signup-name');
     nameInp.oninput = () => {
