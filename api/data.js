@@ -140,6 +140,25 @@ export default async function handler(req, res) {
         return res.status(200).json({ player: players[idx] });
       }
 
+      if (action === 'deletePlayer') {
+        const { id } = body;
+        if (!id) return res.status(400).json({ error: 'Player id required' });
+        const [players, scores] = await Promise.all([getPlayers(), getScores()]);
+        const filteredPlayers = players.filter(p => p.id !== id);
+        const filteredScores = scores.filter(s => s.player_id !== id);
+        await Promise.all([savePlayers(filteredPlayers), saveScores(filteredScores)]);
+        return res.status(200).json({ ok: true });
+      }
+
+      if (action === 'deleteScore') {
+        const { id } = body;
+        if (!id) return res.status(400).json({ error: 'Score id required' });
+        const scores = await getScores();
+        const filtered = scores.filter(s => s.id !== id);
+        await saveScores(filtered);
+        return res.status(200).json({ ok: true });
+      }
+
       if (action === 'postScore') {
         const { playerId, game, score, played_on } = body;
         if (!playerId || !game || score === undefined || !played_on) {
@@ -165,6 +184,44 @@ export default async function handler(req, res) {
         if (idx >= 0) scores[idx] = entry; else scores.push(entry);
         await saveScores(scores);
         return res.status(200).json({ score: entry });
+      }
+
+      if (action === 'postScoreByEmail') {
+        // Used by the Cloudflare Worker that processes inbound emails.
+        // Looks up the player by their account email instead of token.
+        const { email, game, score, played_on } = body;
+        if (!email || !game || score === undefined || !played_on) {
+          return res.status(400).json({ error: 'Missing required fields' });
+        }
+        if (!['mini', 'maptap'].includes(game)) {
+          return res.status(400).json({ error: 'Invalid game type' });
+        }
+
+        const players = await getPlayers();
+        const emailLower = email.toLowerCase().trim();
+        const player = players.find(p => (p.email || '').toLowerCase() === emailLower);
+        if (!player) {
+          // Don't error loudly — this could be spam or a non-user.
+          // Return 200 so the Worker doesn't retry.
+          return res.status(200).json({ ok: false, reason: 'unknown_sender' });
+        }
+
+        const scores = await getScores();
+        const idx = scores.findIndex(s =>
+          s.player_id === player.id && s.game === game && s.played_on === played_on
+        );
+        const entry = {
+          id: idx >= 0 ? scores[idx].id : uid(),
+          player_id: player.id,
+          game,
+          score: parseInt(score),
+          played_on,
+          submitted_at: new Date().toISOString(),
+          source: 'email'
+        };
+        if (idx >= 0) scores[idx] = entry; else scores.push(entry);
+        await saveScores(scores);
+        return res.status(200).json({ ok: true, score: entry, player_name: player.name });
       }
 
       return res.status(400).json({ error: 'Unknown action' });
