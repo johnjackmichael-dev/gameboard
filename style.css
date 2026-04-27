@@ -731,6 +731,135 @@ main{
 .bar-fill{height:100%;border-radius:100px;transition:width .6s var(--ease)}
 .bar-val{font-size:11.5px;color:var(--ink-3);text-align:right;font-variant-numeric:tabular-nums;font-weight:500}
 
+/* ═══════════════ LEADERBOARD MODE TOGGLE ═══════════════ */
+.lb-mode-toggle{
+  display:flex;gap:6px;
+  background:var(--paper);
+  border:1px solid var(--line);
+  border-radius:100px;
+  padding:4px;
+  margin-bottom:14px;
+  width:fit-content;
+}
+.lb-mode-btn{
+  padding:7px 16px;
+  font-size:12.5px;font-weight:500;
+  color:var(--ink-3);
+  border-radius:100px;
+  background:transparent;border:none;
+  cursor:pointer;
+  transition:all .15s var(--ease);
+}
+.lb-mode-btn:hover{color:var(--ink)}
+.lb-mode-btn.on{
+  background:var(--royal);
+  color:#fff;
+  font-weight:600;
+}
+
+/* ═══════════════ HEAD-TO-HEAD VIEW ═══════════════ */
+.h2h-pickers{
+  display:flex;align-items:center;justify-content:center;
+  gap:18px;
+  background:var(--paper);
+  border:1px solid var(--line);
+  border-radius:var(--r-lg);
+  padding:24px 18px;
+  margin-bottom:14px;
+}
+.h2h-picker-side{
+  display:flex;flex-direction:column;align-items:center;gap:10px;
+  flex:1;max-width:200px;
+}
+.h2h-picker-side .rank-av{
+  width:56px !important;height:56px !important;
+  font-size:22px !important;
+}
+.h2h-select{
+  width:100%;
+  font-family:var(--sans);
+  font-size:13.5px;font-weight:500;
+  color:var(--ink);
+  border:1.5px solid var(--ink-6);
+  border-radius:var(--r-sm);
+  padding:8px 28px 8px 12px;
+  background:var(--paper);
+  cursor:pointer;
+  -webkit-appearance:none;
+  appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8.5L1.5 4h9z'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;
+  background-position:right 10px center;
+  text-align:center;
+  text-align-last:center;
+}
+.h2h-select:focus{outline:none;border-color:var(--royal)}
+.h2h-vs{
+  font-family:var(--serif);font-style:italic;
+  font-size:18px;font-weight:500;
+  color:var(--ink-4);
+}
+
+.h2h-score{
+  display:grid;
+  grid-template-columns:1fr auto 1fr;
+  align-items:center;gap:18px;
+  background:linear-gradient(135deg,var(--royal-deep) 0%,var(--royal) 100%);
+  color:#fff;
+  border-radius:var(--r-lg);
+  padding:24px 22px;
+  margin-bottom:14px;
+}
+.h2h-score-side{display:flex;flex-direction:column;align-items:center;gap:6px}
+.h2h-score-num{
+  font-family:var(--serif);font-size:48px;font-weight:600;
+  letter-spacing:-0.03em;line-height:1;
+  color:var(--gold);
+}
+.h2h-score-name{
+  font-size:13px;font-weight:500;
+  color:rgba(255,255,255,0.85);
+}
+.h2h-score-mid{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:80px}
+.h2h-score-ties{
+  font-family:var(--mono);font-size:10px;
+  letter-spacing:0.1em;text-transform:uppercase;
+  color:var(--gold);font-weight:600;
+}
+.h2h-score-days{
+  font-size:11.5px;
+  color:rgba(255,255,255,0.55);
+}
+
+.h2h-game-card{
+  background:var(--paper);
+  border:1px solid var(--line);
+  border-radius:var(--r-lg);
+  padding:14px 18px;
+  margin-bottom:10px;
+}
+.h2h-game-title{
+  font-family:var(--mono);font-size:10px;
+  letter-spacing:0.14em;text-transform:uppercase;
+  color:var(--ink-4);font-weight:600;
+  margin-bottom:10px;
+}
+.h2h-game-row{
+  display:grid;
+  grid-template-columns:1fr auto 1fr;
+  align-items:center;gap:12px;
+  margin-bottom:4px;
+}
+.h2h-game-row:last-child{margin-bottom:0;font-size:12px;color:var(--ink-3)}
+.h2h-game-side{font-size:13.5px;color:var(--ink)}
+.h2h-game-side.right{text-align:right}
+.h2h-game-side strong{color:var(--royal);font-weight:600}
+.h2h-game-mid{
+  font-family:var(--mono);font-size:11px;
+  color:var(--ink-4);
+  text-align:center;
+}
+
 /* ═══════════════ LEADERBOARD VIEW ═══════════════ */
 .lb-table-wrap{
   background:var(--paper);
@@ -910,8 +1039,17 @@ footer{
   main{padding:18px 18px 48px}
   .hero-row{grid-template-columns:1fr;gap:10px}
   .stats-grid{grid-template-columns:1fr 1fr}
+
+  /* On mobile, leaderboard shows: # | Player | Primary stat | W-L  (drops 2 columns) */
   .lb-head-row,.lb-row-full{grid-template-columns:32px 1fr 60px 60px}
   .lb-head-row > :nth-child(5),.lb-head-row > :nth-child(6),
   .lb-row-full > :nth-child(5),.lb-row-full > :nth-child(6){display:none}
+
+  .h2h-pickers{padding:18px 12px;gap:10px}
+  .h2h-picker-side{max-width:none}
+  .h2h-vs{font-size:14px}
+  .h2h-score-num{font-size:38px}
+  .h2h-score{padding:18px 14px;gap:10px}
+
   .modal{padding:26px 22px 22px}
 }
