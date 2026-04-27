@@ -375,7 +375,7 @@ function renderSignIn() {
     </div>
     <div class="auth-title">Welcome <em>back</em>.</div>
     <div class="auth-sub">Sign in with your email to see today's scores.</div>
-    <div class="field"><label>Email</label><input id="signin-email" class="inp" type="email" placeholder="you@example.com"/></div>
+    <div class="field"><label>Email</label><input id="signin-email" class="inp" type="email" placeholder="you@example.com" autocomplete="email" autocapitalize="off" autocorrect="off" inputmode="email"/></div>
     <button class="btn-primary" id="signin-btn">Sign in</button>
     <div class="auth-msg" id="auth-msg"></div>
     <div class="auth-foot">New here? <button id="show-signup">Create an account</button></div>
@@ -403,8 +403,8 @@ function renderSignUp() {
       </label>
     </div>
 
-    <div class="field"><label>Name</label><input id="signup-name" class="inp" placeholder="Your name"/></div>
-    <div class="field"><label>Email</label><input id="signup-email" class="inp" type="email" placeholder="you@example.com"/></div>
+    <div class="field"><label>Name</label><input id="signup-name" class="inp" placeholder="Your name" autocomplete="name" autocapitalize="words"/></div>
+    <div class="field"><label>Email</label><input id="signup-email" class="inp" type="email" placeholder="you@example.com" autocomplete="email" autocapitalize="off" autocorrect="off" inputmode="email"/></div>
     <button class="btn-primary" id="signup-btn">Create account</button>
     <div class="auth-msg" id="auth-msg"></div>
     <div class="auth-foot">Already have an account? <button id="show-signin">Sign in</button></div>
