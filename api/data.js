@@ -1,33 +1,37 @@
 // Vercel serverless function — reads/writes from Upstash KV
 // Path: /api/data
-//
-// Routes:
-//   GET  /api/data?type=players      → list all players
-//   GET  /api/data?type=scores       → list all scores
-//   POST /api/data  body { action: 'createPlayer', name, email }
-//   POST /api/data  body { action: 'postScore', playerId, game, score, played_on }
-//   POST /api/data  body { action: 'updatePlayer', id, name, avatar_url }
 
 const KV_URL = process.env.KV_REST_API_URL;
 const KV_TOKEN = process.env.KV_REST_API_TOKEN;
 
-// Simple Upstash REST helpers
-async function kv(command, ...args) {
-  const res = await fetch(`${KV_URL}/${command}/${args.map(encodeURIComponent).join('/')}`, {
+// GET a value from Upstash KV
+async function kvGet(key) {
+  const res = await fetch(`${KV_URL}/get/${encodeURIComponent(key)}`, {
     headers: { Authorization: `Bearer ${KV_TOKEN}` }
   });
-  if (!res.ok) throw new Error(`KV ${command} failed: ${res.status}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`KV GET failed (${res.status}): ${text}`);
+  }
   const data = await res.json();
-  return data.result;
+  return data.result; // null if key doesn't exist
 }
 
+// SET a value in Upstash KV — pass the value as the request body
 async function kvSet(key, value) {
+  const stringValue = typeof value === 'string' ? value : JSON.stringify(value);
   const res = await fetch(`${KV_URL}/set/${encodeURIComponent(key)}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${KV_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(value)
+    headers: {
+      Authorization: `Bearer ${KV_TOKEN}`,
+      'Content-Type': 'text/plain'
+    },
+    body: stringValue
   });
-  if (!res.ok) throw new Error(`KV set failed: ${res.status}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`KV SET failed (${res.status}): ${text}`);
+  }
   return res.json();
 }
 
@@ -36,22 +40,30 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
-// All gameboard data lives under the gb: prefix to avoid collisions with other apps
+// All gameboard data lives under the gb: prefix
 const KEYS = {
-  players: 'gb:players',  // array of player objects
-  scores:  'gb:scores'    // array of score objects
+  players: 'gb:players',
+  scores:  'gb:scores'
 };
 
 async function getPlayers() {
-  const raw = await kv('get', KEYS.players);
+  const raw = await kvGet(KEYS.players);
   if (!raw) return [];
-  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return []; }
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch { return []; }
+  }
+  return [];
 }
 
 async function getScores() {
-  const raw = await kv('get', KEYS.scores);
+  const raw = await kvGet(KEYS.scores);
   if (!raw) return [];
-  try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return []; }
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch { return []; }
+  }
+  return [];
 }
 
 async function savePlayers(players) {
