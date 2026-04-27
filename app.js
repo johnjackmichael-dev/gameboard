@@ -98,6 +98,46 @@ async function postScore(playerId, game, score, date) {
   }
 }
 
+async function updatePlayer({ id, name, avatar_url }) {
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'updatePlayer', id, name, avatar_url })
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.player;
+  } catch (e) {
+    console.error('updatePlayer error:', e);
+    return null;
+  }
+}
+
+// Compress image to a square ~256x256 JPEG so it's small enough to store in the DB
+function compressImage(dataUrl, callback) {
+  const img = new Image();
+  img.onload = () => {
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    // Cover-crop the image into a square
+    const ratio = Math.max(size / img.width, size / img.height);
+    const newW = img.width * ratio;
+    const newH = img.height * ratio;
+    const offsetX = (size - newW) / 2;
+    const offsetY = (size - newH) / 2;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size, size);
+    ctx.drawImage(img, offsetX, offsetY, newW, newH);
+    callback(canvas.toDataURL('image/jpeg', 0.85));
+  };
+  img.onerror = () => callback(dataUrl); // Fall back to original
+  img.src = dataUrl;
+}
+
 // ═══════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════
@@ -367,10 +407,24 @@ function bindAuth() {
     $('signup-photo').onchange = (e) => {
       const file = e.target.files[0];
       if (!file) return;
+      // Validate file is an image
+      if (!file.type.startsWith('image/')) {
+        alert('Please choose an image file.');
+        return;
+      }
+      // Limit file size (rough check, will compress below)
+      if (file.size > 8 * 1024 * 1024) {
+        alert('Photo too large — please pick something under 8MB.');
+        return;
+      }
       const reader = new FileReader();
       reader.onload = ev => {
-        $('photo-preview').innerHTML = `<img src="${ev.target.result}"/>`;
-        window._pendingPhoto = ev.target.result;
+        // Compress the image so it's not huge in the database
+        compressImage(ev.target.result, (compressed) => {
+          const preview = document.getElementById('photo-preview');
+          preview.innerHTML = `<img src="${compressed}" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>`;
+          window._pendingPhoto = compressed;
+        });
       };
       reader.readAsDataURL(file);
     };
@@ -421,6 +475,10 @@ async function handleSignUp() {
   if (window._pendingPhoto) {
     localStorage.setItem(`av_${player.id}`, window._pendingPhoto);
     player.avatar = window._pendingPhoto;
+    // Also save to the database so it shows up on other devices
+    try {
+      await updatePlayer({ id: player.id, avatar_url: window._pendingPhoto });
+    } catch (e) { console.error('Failed to save avatar to DB:', e); }
     window._pendingPhoto = null;
   }
   state.user = player;
@@ -966,11 +1024,15 @@ function bindApp() {
       const photoIn = document.getElementById('ep-photo');
       photoIn.onchange = (e) => {
         const file = e.target.files[0]; if (!file) return;
+        if (!file.type.startsWith('image/')) { alert('Please choose an image file.'); return; }
+        if (file.size > 8 * 1024 * 1024) { alert('Photo too large — pick under 8MB.'); return; }
         const reader = new FileReader();
         reader.onload = ev => {
-          const preview = document.querySelector('.photo-preview');
-          preview.innerHTML = `<img src="${ev.target.result}" style="width:100%;height:100%;object-fit:cover"/>`;
-          window._pendingPhoto = ev.target.result;
+          compressImage(ev.target.result, (compressed) => {
+            const preview = document.querySelector('#modal-back .photo-preview');
+            if (preview) preview.innerHTML = `<img src="${compressed}" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>`;
+            window._pendingPhoto = compressed;
+          });
         };
         reader.readAsDataURL(file);
       };
@@ -1006,13 +1068,27 @@ async function handleSaveProfile() {
   const name = document.getElementById('ep-name').value.trim();
   const msg = document.getElementById('ep-msg');
   if (!name) { msg.className = 'auth-msg error'; msg.textContent = 'Name is required.'; return; }
+
+  msg.className = 'auth-msg'; msg.textContent = 'Saving...'; msg.style.color = 'var(--ink-3)';
+
+  // Save to database
+  const updated = await updatePlayer({
+    id: state.user.id,
+    name,
+    avatar_url: window._pendingPhoto !== undefined ? window._pendingPhoto : undefined
+  });
+  if (!updated) {
+    msg.className = 'auth-msg error'; msg.textContent = 'Failed to save. Try again.';
+    return;
+  }
+
   state.user.name = name;
   if (window._pendingPhoto) {
     localStorage.setItem(`av_${state.user.id}`, window._pendingPhoto);
     state.user.avatar = window._pendingPhoto;
     window._pendingPhoto = null;
   }
-  // Update player record
+  // Update player record locally
   const idx = state.players.findIndex(p => p.id === state.user.id);
   if (idx >= 0) state.players[idx] = { ...state.players[idx], ...state.user };
   localStorage.setItem('gb_user', JSON.stringify(state.user));
