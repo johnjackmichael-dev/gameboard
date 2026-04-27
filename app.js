@@ -1,917 +1,1366 @@
-*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+// ═══════════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════════
+// All data goes through /api/data — a Vercel serverless function
+// that reads/writes to Upstash KV. No keys needed in the browser.
+const API_URL = '/api/data';
 
-:root{
-  --royal:#1e3a8a;
-  --royal-dark:#0f1f3d;
-  --royal-deep:#0a1628;
-  --royal-mid:#1e40af;
-  --gold:#d4a945;
-  --gold-soft:#e8c66a;
-  --gold-deep:#a8841f;
-  --gold-bg:rgba(212,169,69,0.10);
-  --gold-bg-strong:rgba(212,169,69,0.20);
+// ═══════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════
+const state = {
+  view: 'auth',        // 'auth' | 'app'
+  authMode: 'signin',  // 'signin' | 'signup' | 'shortcut'
+  user: null,          // { id, name, email, token, avatar }
+  tab: 'dashboard',    // 'dashboard' | 'leaderboard' | 'records' | 'account'
+  game: 'all',
+  scores: [],
+  players: [],
+  modal: null,         // null | 'shortcut' | 'logScore' | 'editProfile'
+};
 
-  --bg:#f8fafc;
-  --paper:#ffffff;
-  --line:rgba(15,23,42,0.08);
-  --line-strong:rgba(15,23,42,0.16);
-  --line-hairline:rgba(15,23,42,0.05);
+// ═══════════════════════════════════════════════
+// BOOT
+// ═══════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', async () => {
+  // Restore session
+  const saved = localStorage.getItem('gb_user');
+  if (saved) {
+    try {
+      state.user = JSON.parse(saved);
+      state.user.avatar = localStorage.getItem(`av_${state.user.id}`) || state.user.avatar || null;
+      state.view = 'app';
+    } catch {}
+  }
 
-  --ink:#0f172a;
-  --ink-2:#334155;
-  --ink-3:#64748b;
-  --ink-4:#94a3b8;
-  --ink-5:#cbd5e1;
-  --ink-6:#e2e8f0;
+  await loadData();
+  render();
 
-  --win:#0f766e;
-  --win-bg:rgba(15,118,110,0.08);
-  --loss:#a32d2d;
-  --loss-bg:rgba(163,45,45,0.06);
+  setInterval(async () => {
+    if (state.view === 'app') { await loadData(); render(); }
+  }, 60000);
+});
 
-  --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-  --serif:'Fraunces',Georgia,serif;
-  --mono:'JetBrains Mono',ui-monospace,monospace;
-
-  --r-sm:6px;
-  --r:10px;
-  --r-lg:14px;
-  --r-xl:20px;
-
-  --ease:cubic-bezier(.2,0,0,1);
-}
-
-html{font-size:16px;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
-body{
-  background:var(--bg);
-  color:var(--ink);
-  font-family:var(--sans);
-  font-size:14px;
-  line-height:1.5;
-  letter-spacing:-0.005em;
-  min-height:100vh;
-}
-
-button{font-family:inherit;cursor:pointer;border:none;background:none}
-input,select{font-family:inherit}
-
-/* ═══════════════ SIGN-UP FLOW ═══════════════ */
-.auth-shell{
-  min-height:100vh;
-  background:linear-gradient(135deg,var(--royal-deep) 0%,var(--royal) 100%);
-  display:flex;align-items:center;justify-content:center;
-  padding:24px;
-  position:relative;
-  overflow:hidden;
-}
-.auth-shell::before{
-  content:'';position:absolute;inset:0;
-  background:
-    radial-gradient(circle at 20% 20%, rgba(212,169,69,0.08) 0%, transparent 50%),
-    radial-gradient(circle at 80% 80%, rgba(30,64,175,0.4) 0%, transparent 50%);
-  pointer-events:none;
+// ═══════════════════════════════════════════════
+// DATA
+// ═══════════════════════════════════════════════
+async function loadData() {
+  try {
+    const res = await fetch(API_URL);
+    if (!res.ok) throw new Error('Load failed');
+    const { players, scores } = await res.json();
+    state.players = (players || []).map(p => ({
+      ...p, avatar: localStorage.getItem(`av_${p.id}`) || p.avatar_url || null
+    }));
+    state.scores = scores || [];
+    state.scores.sort((a, b) => b.played_on.localeCompare(a.played_on));
+  } catch (e) {
+    console.error('Load error:', e);
+    // Fallback: keep whatever we had
+  }
 }
 
-.auth-card{
-  background:var(--paper);
-  border-radius:var(--r-xl);
-  padding:40px 44px 36px;
-  max-width:440px;width:100%;
-  box-shadow:0 30px 80px rgba(0,0,0,0.25), 0 8px 24px rgba(0,0,0,0.1);
-  position:relative;z-index:1;
-  animation:rise .4s var(--ease) both;
+async function createPlayer({ name, email }) {
+  // 15 second timeout so we don't spin forever
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'createPlayer', name, email }),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    let data;
+    try { data = await res.json(); }
+    catch { throw new Error(`Server returned non-JSON response (status ${res.status})`); }
+
+    if (!res.ok) {
+      throw new Error(data.error || `Server error (${res.status})`);
+    }
+    return data.player;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      throw new Error('Request timed out. Check your connection and try again.');
+    }
+    throw err;
+  }
 }
 
-@keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
-
-.auth-mark{
-  display:flex;align-items:center;gap:10px;
-  margin-bottom:28px;
-}
-.auth-mark-dot{
-  width:32px;height:32px;border-radius:8px;
-  background:var(--royal);
-  display:flex;align-items:center;justify-content:center;
-  color:var(--gold);
-  font-family:var(--serif);font-style:italic;font-size:18px;font-weight:600;
-}
-.auth-mark-text{
-  font-family:var(--sans);font-size:13px;font-weight:600;
-  color:var(--ink);letter-spacing:0.5px;text-transform:uppercase;
-}
-
-.auth-title{
-  font-family:var(--serif);
-  font-size:32px;font-weight:600;
-  letter-spacing:-0.02em;line-height:1.1;
-  color:var(--ink);
-  margin-bottom:10px;
-}
-.auth-title em{font-style:italic;color:var(--royal);font-weight:500}
-
-.auth-sub{
-  font-size:14px;line-height:1.55;
-  color:var(--ink-3);
-  margin-bottom:28px;
+async function postScore(playerId, game, score, date) {
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'postScore',
+        playerId, game, score: parseInt(score), played_on: date
+      })
+    });
+    if (!res.ok) return false;
+    // Reload scores to reflect the new entry
+    await loadData();
+    return true;
+  } catch (e) {
+    console.error('postScore error:', e);
+    return false;
+  }
 }
 
-.field{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
-.field label{
-  font-size:11px;font-weight:600;
-  color:var(--ink-3);
-  letter-spacing:0.04em;
-  text-transform:uppercase;
+async function updatePlayer({ id, name, avatar_url }) {
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'updatePlayer', id, name, avatar_url })
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.player;
+  } catch (e) {
+    console.error('updatePlayer error:', e);
+    return null;
+  }
 }
 
-.inp{
-  background:var(--paper);
-  border:1.5px solid var(--ink-6);
-  border-radius:var(--r-sm);
-  padding:11px 14px;
-  font-size:14.5px;
-  color:var(--ink);
-  outline:none;
-  transition:border-color .15s var(--ease), box-shadow .15s var(--ease);
-  width:100%;
-}
-.inp:focus{
-  border-color:var(--royal);
-  box-shadow:0 0 0 3px rgba(30,58,138,0.12);
+async function deletePlayer(id) {
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'deletePlayer', id })
+    });
+    return res.ok;
+  } catch (e) {
+    console.error('deletePlayer error:', e);
+    return false;
+  }
 }
 
-.btn-primary{
-  background:var(--royal);
-  color:#fff;
-  border-radius:var(--r-sm);
-  padding:12px 24px;
-  font-size:14px;font-weight:600;
-  transition:background .15s var(--ease), transform .1s var(--ease);
-  letter-spacing:-0.005em;
-  width:100%;
-}
-.btn-primary:hover{background:var(--royal-mid)}
-.btn-primary:active{transform:scale(.98)}
-
-.btn-secondary{
-  background:transparent;
-  color:var(--royal);
-  border:1.5px solid var(--royal);
-  border-radius:var(--r-sm);
-  padding:11px 22px;
-  font-size:13.5px;font-weight:600;
-  transition:all .15s var(--ease);
-}
-.btn-secondary:hover{background:var(--royal);color:#fff}
-
-.btn-ghost{
-  background:transparent;
-  color:var(--ink-3);
-  font-size:13px;font-weight:500;
-  padding:8px 14px;
-  border-radius:var(--r-sm);
-  transition:color .15s var(--ease), background .15s var(--ease);
-}
-.btn-ghost:hover{color:var(--ink);background:var(--bg)}
-
-/* Photo upload */
-.photo-upload{
-  display:flex;align-items:center;gap:14px;
-  padding:14px;
-  background:var(--bg);
-  border-radius:var(--r);
-  border:1.5px dashed var(--ink-6);
-  margin-bottom:16px;
-  transition:border-color .15s var(--ease);
-}
-.photo-upload:hover{border-color:var(--royal)}
-.photo-preview{
-  width:54px;height:54px;border-radius:50%;
-  background:var(--royal);
-  color:var(--gold);
-  display:flex;align-items:center;justify-content:center;
-  font-family:var(--serif);font-style:italic;
-  font-size:22px;font-weight:500;
-  flex-shrink:0;overflow:hidden;
-}
-.photo-preview img{width:100%;height:100%;object-fit:cover}
-.photo-info{flex:1}
-.photo-label-line{font-size:13px;font-weight:500;color:var(--ink);margin-bottom:2px}
-.photo-sub{font-size:11.5px;color:var(--ink-4)}
-.photo-btn{
-  font-size:12px;font-weight:500;color:var(--royal);
-  border:1px solid var(--royal);
-  padding:6px 12px;border-radius:var(--r-sm);
-  background:transparent;
-  transition:all .15s var(--ease);
-}
-.photo-btn:hover{background:var(--royal);color:#fff}
-
-.auth-foot{
-  margin-top:18px;
-  font-size:12.5px;color:var(--ink-3);
-  text-align:center;
-}
-.auth-foot button{
-  color:var(--royal);font-weight:600;
-  font-size:inherit;padding:0;
-}
-.auth-foot button:hover{text-decoration:underline}
-
-.auth-msg{
-  margin-top:12px;
-  font-size:12.5px;font-weight:500;
-  min-height:1.4em;
-}
-.auth-msg.error{color:var(--loss)}
-.auth-msg.success{color:var(--win)}
-
-/* Shortcut step */
-.shortcut-step{
-  background:linear-gradient(135deg,var(--royal-deep) 0%,var(--royal) 100%);
-  color:#fff;
-  border-radius:var(--r-lg);
-  padding:24px 26px;
-  margin-bottom:18px;
-  position:relative;overflow:hidden;
-}
-.shortcut-step::before{
-  content:'';position:absolute;
-  top:-30px;right:-30px;
-  width:160px;height:160px;
-  background:radial-gradient(circle, rgba(212,169,69,0.18), transparent 70%);
-  pointer-events:none;
-}
-.shortcut-eyebrow{
-  font-family:var(--mono);font-size:10.5px;
-  letter-spacing:0.16em;text-transform:uppercase;
-  color:var(--gold);
-  margin-bottom:10px;font-weight:500;
-}
-.shortcut-title{
-  font-family:var(--serif);font-size:24px;font-weight:600;
-  letter-spacing:-0.015em;line-height:1.15;
-  margin-bottom:8px;
-}
-.shortcut-desc{
-  font-size:13.5px;line-height:1.5;
-  color:rgba(255,255,255,0.7);
-  margin-bottom:18px;
-}
-.shortcut-button{
-  display:inline-flex;align-items:center;gap:8px;
-  background:var(--gold);
-  color:var(--royal-deep);
-  padding:10px 18px;
-  border-radius:var(--r-sm);
-  font-size:13.5px;font-weight:600;
-  text-decoration:none;
-  transition:background .15s var(--ease);
-}
-.shortcut-button:hover{background:var(--gold-soft)}
-.shortcut-meta{
-  display:flex;gap:14px;
-  margin-top:14px;font-size:12px;
-  color:rgba(255,255,255,0.55);
-}
-.shortcut-meta-item{display:flex;align-items:center;gap:5px}
-
-.step-list{
-  background:var(--paper);
-  border-radius:var(--r-lg);
-  border:1px solid var(--line);
-  padding:18px 22px;
-  margin-bottom:14px;
-}
-.step-list-title{
-  font-size:11px;font-weight:600;
-  color:var(--ink-3);
-  letter-spacing:0.06em;text-transform:uppercase;
-  margin-bottom:14px;
-}
-.step{
-  display:flex;align-items:flex-start;gap:14px;
-  padding:8px 0;font-size:13.5px;line-height:1.5;
-}
-.step-num{
-  width:22px;height:22px;border-radius:50%;
-  background:var(--royal);color:#fff;
-  display:flex;align-items:center;justify-content:center;
-  font-size:11px;font-weight:600;
-  flex-shrink:0;
-  font-family:var(--mono);
-}
-.step-text{color:var(--ink-2)}
-.step-text strong{font-weight:600;color:var(--ink)}
-
-/* Copy buttons */
-.copy-btn{
-  background:rgba(255,255,255,0.1);
-  color:#fff;
-  font-family:var(--sans);
-  font-size:11.5px;font-weight:500;
-  padding:5px 11px;
-  border-radius:6px;
-  border:1px solid rgba(255,255,255,0.15);
-  cursor:pointer;
-  transition:background .15s var(--ease);
-}
-.copy-btn:hover{background:rgba(255,255,255,0.18)}
-.copy-btn:disabled{cursor:default;opacity:0.7}
-
-.copy-btn-sm{
-  background:var(--royal);
-  color:#fff;
-  font-family:var(--sans);
-  font-size:10px;font-weight:600;letter-spacing:0.04em;
-  text-transform:uppercase;
-  padding:3px 8px;
-  border-radius:4px;
-  border:none;
-  cursor:pointer;
-  margin-left:4px;
-  vertical-align:middle;
-  transition:background .15s var(--ease);
-}
-.copy-btn-sm:hover{background:var(--royal-mid)}
-.copy-btn-sm:disabled{cursor:default;opacity:0.7}
-
-/* Setup guide steps */
-.guide-step{
-  display:flex;align-items:flex-start;gap:14px;
-  padding:14px 0;
-  border-bottom:1px solid var(--line-hairline);
-}
-.guide-step:last-child{border-bottom:none}
-.guide-num{
-  width:26px;height:26px;border-radius:50%;
-  background:var(--royal);color:#fff;
-  display:flex;align-items:center;justify-content:center;
-  font-size:12px;font-weight:600;
-  flex-shrink:0;
-  font-family:var(--mono);
-}
-.guide-text{
-  font-size:13.5px;
-  line-height:1.55;
-  color:var(--ink-2);
-}
-.guide-text strong{color:var(--ink);font-weight:600}
-.guide-text code{
-  font-family:var(--mono);
-  font-size:11.5px;
-  color:var(--royal);
+async function deleteScoreEntry(scoreId) {
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'deleteScore', id: scoreId })
+    });
+    return res.ok;
+  } catch (e) {
+    console.error('deleteScore error:', e);
+    return false;
+  }
 }
 
-/* ═══════════════ APP SHELL ═══════════════ */
-.app-shell{min-height:100vh;background:var(--bg)}
-
-.hdr{
-  background:linear-gradient(135deg,var(--royal-deep) 0%,var(--royal-dark) 100%);
-  padding:0;
-  position:sticky;top:0;z-index:50;
+// Compress image to a square ~256x256 JPEG so it's small enough to store in the DB
+function compressImage(dataUrl, callback) {
+  const img = new Image();
+  img.onload = () => {
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    // Cover-crop the image into a square
+    const ratio = Math.max(size / img.width, size / img.height);
+    const newW = img.width * ratio;
+    const newH = img.height * ratio;
+    const offsetX = (size - newW) / 2;
+    const offsetY = (size - newH) / 2;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size, size);
+    ctx.drawImage(img, offsetX, offsetY, newW, newH);
+    callback(canvas.toDataURL('image/jpeg', 0.85));
+  };
+  img.onerror = () => callback(dataUrl); // Fall back to original
+  img.src = dataUrl;
 }
 
-.hdr-inner{
-  max-width:1080px;margin:0 auto;
-  padding:14px 24px;
-  display:flex;align-items:center;justify-content:space-between;gap:16px;
+// ═══════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════
+const todayStr = () => new Date().toISOString().split('T')[0];
+
+function fmtScore(val, game) {
+  if (val === null || val === undefined) return '—';
+  if (game === 'maptap') return Math.round(val).toLocaleString();
+  const m = Math.floor(val / 60), s = val % 60;
+  return `${m}:${s < 10 ? '0' : ''}${s}`;
 }
 
-.hdr-brand{display:flex;align-items:center;gap:10px}
-.hdr-mark{
-  width:30px;height:30px;border-radius:8px;
-  background:var(--gold);
-  color:var(--royal-deep);
-  display:flex;align-items:center;justify-content:center;
-  font-family:var(--serif);font-style:italic;font-weight:600;
-  font-size:16px;
-  flex-shrink:0;
-}
-.hdr-title{
-  font-size:14px;font-weight:600;color:#fff;
-  letter-spacing:-0.01em;
-}
-.hdr-title em{font-style:normal;color:var(--gold)}
-
-.hdr-actions{
-  display:flex;align-items:center;gap:10px;
+function fmtDate(str) {
+  if (!str) return '—';
+  if (str === todayStr()) return 'Today';
+  const yest = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  if (str === yest) return 'Yesterday';
+  const d = new Date(str + 'T12:00:00');
+  const today = new Date();
+  const sameYear = d.getFullYear() === today.getFullYear();
+  return d.toLocaleDateString('en-US', sameYear ? { month:'short', day:'numeric' } : { month:'short', day:'numeric', year:'numeric' });
 }
 
-.hdr-log-btn{
-  display:flex;align-items:center;gap:6px;
-  background:var(--gold);
-  color:var(--royal-deep);
-  padding:7px 14px 7px 11px;
-  border-radius:100px;
-  font-family:var(--sans);
-  font-size:12.5px;font-weight:600;
-  letter-spacing:-0.005em;
-  cursor:pointer;
-  transition:background .15s var(--ease), transform .1s var(--ease);
-  border:none;
-}
-.hdr-log-btn:hover{background:var(--gold-soft)}
-.hdr-log-btn:active{transform:scale(.97)}
-.hdr-log-plus{
-  font-size:16px;font-weight:600;line-height:1;
-  margin-top:-1px;
+function relDate(str) {
+  if (!str) return '';
+  if (str === todayStr()) return 'today';
+  const yest = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  if (str === yest) return 'yesterday';
+  const d = new Date(str + 'T12:00:00');
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString('en-US', { month:'short', day:'numeric' });
 }
 
-.hdr-acct{
-  display:flex;align-items:center;gap:10px;
-  background:rgba(255,255,255,0.06);
-  padding:5px 14px 5px 5px;
-  border-radius:100px;
-  cursor:pointer;
-  transition:background .15s var(--ease);
-}
-.hdr-acct:hover{background:rgba(255,255,255,0.12)}
-.hdr-avatar{
-  width:28px;height:28px;border-radius:50%;
-  background:var(--gold);
-  color:var(--royal-deep);
-  display:flex;align-items:center;justify-content:center;
-  font-size:12px;font-weight:600;
-  overflow:hidden;flex-shrink:0;
-}
-.hdr-avatar img{width:100%;height:100%;object-fit:cover}
-.hdr-name{font-size:12.5px;color:#fff;font-weight:500}
+function getPlayer(id) { return state.players.find(p => p.id === id); }
 
-.tabs{
-  background:var(--paper);
-  border-bottom:1px solid var(--line);
-  padding:0;
-  position:sticky;top:58px;z-index:49;
-}
-.tabs-inner{
-  max-width:1080px;margin:0 auto;
-  padding:0 24px;
-  display:flex;
-}
-.tab{
-  font-size:13px;font-weight:500;
-  color:var(--ink-3);
-  padding:14px 18px;
-  border-bottom:2px solid transparent;
-  margin-bottom:-1px;
-  transition:color .15s var(--ease), border-color .15s var(--ease);
-}
-.tab:hover{color:var(--ink)}
-.tab.on{
-  color:var(--ink);
-  border-bottom-color:var(--royal);
-  font-weight:600;
+function escapeHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-.game-pills{
-  background:var(--paper);
-  border-bottom:1px solid var(--line);
-  padding:14px 24px;
-}
-.game-pills-inner{
-  max-width:1080px;margin:0 auto;
-  display:flex;gap:6px;
-}
-.pill{
-  padding:6px 14px;
-  border-radius:100px;
-  font-size:12.5px;font-weight:500;
-  color:var(--ink-3);
-  border:1px solid var(--line-strong);
-  background:transparent;
-  transition:all .15s var(--ease);
-}
-.pill:hover{color:var(--ink);border-color:var(--ink-3)}
-.pill.on{
-  background:var(--royal);
-  color:#fff;
-  border-color:var(--royal);
-  font-weight:600;
+// Copy text to clipboard with visual feedback on the button
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // Fallback for older browsers / non-HTTPS
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch {}
+    document.body.removeChild(ta);
+  }
+  if (btn) {
+    const original = btn.textContent;
+    btn.textContent = '✓ Copied';
+    btn.disabled = true;
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 1500);
+  }
 }
 
-main{
-  max-width:1080px;margin:0 auto;
-  padding:24px 24px 60px;
+function avatarHTML(p, size = 36, cls = '') {
+  if (!p) return `<div class="${cls||'rank-av'}" style="width:${size}px;height:${size}px;font-size:${Math.round(size*0.4)}px">?</div>`;
+  if (p.avatar) {
+    return `<div class="${cls||'rank-av'}" style="width:${size}px;height:${size}px"><img src="${p.avatar}" alt=""/></div>`;
+  }
+  return `<div class="${cls||'rank-av'}" style="width:${size}px;height:${size}px;font-size:${Math.round(size*0.4)}px">${escapeHtml(p.name[0]).toUpperCase()}</div>`;
 }
 
-/* ═══════════════ DASHBOARD ═══════════════ */
-.hero-row{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:14px;
-  margin-bottom:14px;
+// ═══════════════════════════════════════════════
+// STATS
+// ═══════════════════════════════════════════════
+function filteredScores() {
+  return state.game === 'all' ? state.scores : state.scores.filter(s => s.game === state.game);
 }
 
-.leader-card{
-  background:linear-gradient(135deg,var(--royal-deep) 0%,var(--royal) 100%);
-  color:#fff;
-  border-radius:var(--r-lg);
-  padding:22px 24px;
-  position:relative;
-  overflow:hidden;
-}
-.leader-card::before{
-  content:'';position:absolute;
-  top:-40px;right:-40px;
-  width:180px;height:180px;
-  background:radial-gradient(circle,rgba(212,169,69,0.18),transparent 70%);
-  pointer-events:none;
-}
-.leader-eyebrow{
-  font-family:var(--mono);font-size:10px;
-  letter-spacing:0.18em;text-transform:uppercase;
-  color:var(--gold);
-  margin-bottom:14px;font-weight:600;
-}
-.leader-row{display:flex;align-items:center;gap:16px;position:relative;z-index:1}
-.leader-av{
-  width:62px;height:62px;border-radius:50%;
-  background:rgba(212,169,69,0.18);
-  border:2px solid var(--gold);
-  color:var(--gold);
-  display:flex;align-items:center;justify-content:center;
-  font-family:var(--serif);font-style:italic;font-weight:600;
-  font-size:26px;
-  overflow:hidden;flex-shrink:0;
-}
-.leader-av img{width:100%;height:100%;object-fit:cover}
-.leader-name{
-  font-family:var(--serif);font-size:26px;font-weight:600;
-  letter-spacing:-0.02em;line-height:1.05;
-  margin-bottom:4px;
-}
-.leader-stat{
-  font-size:13px;color:rgba(255,255,255,0.7);
-  font-variant-numeric:tabular-nums;
+function playerStats(pid) {
+  const ps = filteredScores().filter(s => s.player_id === pid);
+  if (!ps.length) return null;
+  const isMini = state.game !== 'maptap';
+  const vals = ps.map(s => s.score);
+  let wins = 0, losses = 0, ties = 0;
+  const myDates = [...new Set(ps.map(s => s.played_on))];
+  myDates.forEach(date => {
+    const mine = ps.find(s => s.played_on === date);
+    const others = filteredScores().filter(s => s.player_id !== pid && s.played_on === date);
+    if (!mine || !others.length) return;
+    others.forEach(o => {
+      if (mine.score === o.score) ties++;
+      else if (isMini ? mine.score < o.score : mine.score > o.score) wins++;
+      else losses++;
+    });
+  });
+  const total = wins + losses + ties;
+  return {
+    count: ps.length,
+    avg: Math.round(vals.reduce((a, b) => a + b, 0) / vals.length),
+    best: isMini ? Math.min(...vals) : Math.max(...vals),
+    worst: isMini ? Math.max(...vals) : Math.min(...vals),
+    wins, losses, ties,
+    winPct: total ? Math.round(wins / total * 100) : 0
+  };
 }
 
-.streak-card{
-  background:var(--paper);
-  border:1px solid var(--line);
-  border-radius:var(--r-lg);
-  padding:22px 24px;
-  display:flex;align-items:center;gap:16px;
-}
-.streak-circle{
-  width:62px;height:62px;border-radius:50%;
-  background:var(--gold-bg);
-  display:flex;align-items:center;justify-content:center;
-  flex-shrink:0;
-}
-.streak-num{
-  font-family:var(--serif);font-size:30px;font-weight:600;
-  color:var(--royal);
-  font-variant-numeric:tabular-nums;
-  line-height:1;
-}
-.streak-info{flex:1;min-width:0}
-.streak-eyebrow{
-  font-family:var(--mono);font-size:10px;
-  letter-spacing:0.16em;text-transform:uppercase;
-  color:var(--ink-3);font-weight:600;
-  margin-bottom:5px;
-}
-.streak-detail{
-  font-size:14.5px;font-weight:600;
-  color:var(--ink);margin-bottom:1px;
-  letter-spacing:-0.01em;
-}
-.streak-since{font-size:12px;color:var(--ink-3)}
-
-/* Stats grid */
-.stats-grid{
-  display:grid;
-  grid-template-columns:repeat(4,1fr);
-  gap:10px;
-  margin-bottom:14px;
+function streak(pid) {
+  const isMini = state.game !== 'maptap';
+  const dates = [...new Set(filteredScores().map(s => s.played_on))].sort((a, b) => b.localeCompare(a));
+  let n = 0;
+  for (const date of dates) {
+    const mine = filteredScores().find(s => s.player_id === pid && s.played_on === date);
+    const others = filteredScores().filter(s => s.player_id !== pid && s.played_on === date);
+    if (!mine || !others.length) { if (n > 0) break; continue; }
+    const won = others.every(o => isMini ? mine.score < o.score : mine.score > o.score);
+    if (won) n++; else if (n > 0) break;
+  }
+  return n;
 }
 
-.stat-card{
-  background:var(--paper);
-  border:1px solid var(--line);
-  border-radius:var(--r-lg);
-  padding:14px 16px;
-}
-.stat-label{
-  font-family:var(--mono);font-size:9.5px;
-  letter-spacing:0.14em;text-transform:uppercase;
-  color:var(--ink-4);font-weight:600;
-  margin-bottom:8px;
-}
-.stat-num{
-  font-family:var(--serif);font-size:24px;font-weight:600;
-  letter-spacing:-0.025em;line-height:1;
-  color:var(--ink);
-  font-variant-numeric:tabular-nums;
-  margin-bottom:6px;
-}
-.stat-num.blue{color:var(--royal)}
-.stat-num.gold{color:var(--gold-deep)}
-.stat-num.red{color:var(--loss)}
-.stat-meta{
-  display:flex;justify-content:space-between;align-items:baseline;
-  font-size:11px;
-}
-.stat-who{color:var(--ink-2);font-weight:500}
-.stat-when{color:var(--ink-4)}
-
-/* Section heads */
-.section-head{
-  display:flex;justify-content:space-between;align-items:baseline;
-  margin:22px 0 10px;
-}
-.section-title{
-  font-size:11px;font-weight:600;
-  color:var(--ink-3);
-  letter-spacing:0.16em;text-transform:uppercase;
-}
-.section-link{
-  font-size:12.5px;font-weight:500;
-  color:var(--royal);
-  cursor:pointer;
-}
-.section-link:hover{text-decoration:underline}
-
-/* Top of leaderboard preview */
-.ranks{
-  background:var(--paper);
-  border:1px solid var(--line);
-  border-radius:var(--r-lg);
-  overflow:hidden;
-}
-.rank-row{
-  display:grid;
-  grid-template-columns:32px 1fr auto auto;
-  gap:14px;align-items:center;
-  padding:14px 18px;
-  border-bottom:1px solid var(--line-hairline);
-  transition:background .12s var(--ease);
-}
-.rank-row:last-child{border-bottom:none}
-.rank-row:hover{background:var(--bg)}
-.rank-row.first{background:linear-gradient(90deg,var(--gold-bg),transparent 60%)}
-.rank-row.first:hover{background:linear-gradient(90deg,var(--gold-bg-strong),var(--bg) 60%)}
-
-.rank-num{
-  font-family:var(--serif);font-size:15px;font-weight:600;
-  color:var(--ink-5);
-  text-align:center;
-  font-variant-numeric:tabular-nums;
-}
-.rank-num.r1{color:var(--gold-deep)}
-.rank-num.r2{color:var(--ink-2)}
-.rank-num.r3{color:var(--ink-3)}
-
-.rank-player{display:flex;align-items:center;gap:12px;min-width:0}
-.rank-av{
-  width:36px;height:36px;border-radius:50%;
-  background:var(--royal);color:var(--gold);
-  display:flex;align-items:center;justify-content:center;
-  font-family:var(--serif);font-style:italic;font-weight:500;
-  font-size:14px;
-  flex-shrink:0;overflow:hidden;
-}
-.rank-av img{width:100%;height:100%;object-fit:cover}
-.rank-info{min-width:0}
-.rank-name{
-  font-size:14px;font-weight:600;
-  color:var(--ink);letter-spacing:-0.01em;
-  display:flex;align-items:center;gap:6px;
-  flex-wrap:wrap;
-}
-.streak-tag{
-  font-family:var(--mono);font-size:10px;font-weight:600;
-  background:var(--gold-bg);
-  color:var(--gold-deep);
-  padding:2px 7px;border-radius:100px;
-  letter-spacing:0.02em;
-}
-.rank-meta{
-  font-size:11.5px;color:var(--ink-3);
-  margin-top:2px;font-variant-numeric:tabular-nums;
+function ranked() {
+  return state.players
+    .map(p => ({ player: p, stats: playerStats(p.id), streak: streak(p.id) }))
+    .filter(r => r.stats)
+    .sort((a, b) => b.stats.winPct - a.stats.winPct || b.stats.wins - a.stats.wins);
 }
 
-.rank-pct{
-  font-family:var(--serif);font-size:18px;font-weight:600;
-  color:var(--royal);
-  font-variant-numeric:tabular-nums;
-  letter-spacing:-0.02em;
-}
-.rank-pct .pct-sym{font-size:13px;color:var(--ink-3);font-weight:500}
-.rank-record{
-  font-family:var(--mono);font-size:11.5px;
-  color:var(--ink-3);text-align:right;
-  font-weight:500;
-}
-
-/* Trend card */
-.trend{
-  background:var(--paper);
-  border:1px solid var(--line);
-  border-radius:var(--r-lg);
-  padding:18px 22px;
-  margin-top:12px;
-}
-.trend-head{
-  display:flex;justify-content:space-between;align-items:baseline;
-  margin-bottom:14px;
-}
-.trend-title{font-size:14px;font-weight:600;letter-spacing:-0.01em}
-.trend-sub{font-size:11px;color:var(--ink-4)}
-
-.bar-row{
-  display:grid;
-  grid-template-columns:80px 1fr 64px;
-  gap:12px;align-items:center;
-  margin-bottom:10px;
-}
-.bar-row:last-child{margin-bottom:0}
-.bar-name{font-size:12.5px;color:var(--ink-2);font-weight:500}
-.bar-track{height:8px;background:var(--line-hairline);border-radius:100px;overflow:hidden}
-.bar-fill{height:100%;border-radius:100px;transition:width .6s var(--ease)}
-.bar-val{font-size:11.5px;color:var(--ink-3);text-align:right;font-variant-numeric:tabular-nums;font-weight:500}
-
-/* ═══════════════ LEADERBOARD VIEW ═══════════════ */
-.lb-table-wrap{
-  background:var(--paper);
-  border:1px solid var(--line);
-  border-radius:var(--r-lg);
-  overflow:hidden;
-}
-.lb-head-row{
-  display:grid;
-  grid-template-columns:36px 1fr 70px 70px 70px 70px;
-  gap:12px;align-items:center;
-  padding:12px 18px;
-  background:var(--bg);
-  border-bottom:1px solid var(--line);
-  font-family:var(--mono);font-size:9.5px;
-  font-weight:600;letter-spacing:0.14em;
-  text-transform:uppercase;
-  color:var(--ink-4);
-}
-.lb-head-row .right{text-align:right}
-.lb-row-full{
-  display:grid;
-  grid-template-columns:36px 1fr 70px 70px 70px 70px;
-  gap:12px;align-items:center;
-  padding:14px 18px;
-  border-bottom:1px solid var(--line-hairline);
-  transition:background .12s var(--ease);
-}
-.lb-row-full:last-child{border-bottom:none}
-.lb-row-full:hover{background:var(--bg)}
-.lb-row-full.first{background:linear-gradient(90deg,var(--gold-bg),transparent 60%)}
-.lb-row-full .rank-stat{
-  font-family:var(--mono);font-size:13px;font-weight:500;
-  color:var(--ink-2);text-align:right;
-  font-variant-numeric:tabular-nums;
-}
-.lb-row-full .rank-stat.primary{color:var(--royal);font-weight:600;font-size:14px}
-.lb-row-full .rank-stat.muted{color:var(--ink-4)}
-
-/* ═══════════════ RECORDS ═══════════════ */
-.records-grid{
-  display:grid;
-  grid-template-columns:repeat(auto-fill,minmax(220px,1fr));
-  gap:10px;
-}
-.record-card{
-  background:var(--paper);
-  border:1px solid var(--line);
-  border-radius:var(--r-lg);
-  padding:18px 20px;
-}
-.record-eyebrow{
-  font-family:var(--mono);font-size:10px;
-  letter-spacing:0.14em;text-transform:uppercase;
-  color:var(--ink-4);font-weight:600;
-  margin-bottom:8px;
-}
-.record-big{
-  font-family:var(--serif);font-size:32px;font-weight:600;
-  letter-spacing:-0.03em;line-height:1;
-  color:var(--ink);
-  font-variant-numeric:tabular-nums;
-  margin-bottom:8px;
-}
-.record-big.blue{color:var(--royal)}
-.record-big.gold{color:var(--gold-deep)}
-.record-big.red{color:var(--loss)}
-.record-meta{
-  display:flex;justify-content:space-between;align-items:baseline;
-  font-size:12px;
-}
-.record-who{color:var(--ink-2);font-weight:500}
-.record-when{color:var(--ink-4)}
-
-/* Empty state */
-.empty{
-  background:var(--paper);
-  border:1px dashed var(--line-strong);
-  border-radius:var(--r-lg);
-  padding:48px 24px;
-  text-align:center;
-}
-.empty-text{
-  font-family:var(--serif);font-style:italic;
-  font-size:18px;
-  color:var(--ink-3);font-weight:500;
-}
-.empty-sub{
-  font-size:12.5px;color:var(--ink-4);
-  margin-top:8px;
+// Find best/worst across all scores in a game
+function findExtreme(game, type) {
+  const fs = state.scores.filter(s => s.game === game);
+  if (!fs.length) return null;
+  const isMini = game !== 'maptap';
+  const compare = type === 'best'
+    ? (isMini ? (a, b) => a.score < b.score : (a, b) => a.score > b.score)
+    : (isMini ? (a, b) => a.score > b.score : (a, b) => a.score < b.score);
+  let extreme = fs[0];
+  fs.forEach(s => { if (compare(s, extreme)) extreme = s; });
+  return { ...extreme, player: getPlayer(extreme.player_id) };
 }
 
-/* Modal */
-.modal-back{
-  position:fixed;inset:0;z-index:200;
-  background:rgba(15,23,42,0.6);
-  backdrop-filter:blur(6px);
-  display:flex;align-items:center;justify-content:center;
-  padding:24px;
-  animation:fadeIn .2s var(--ease);
-}
-@keyframes fadeIn{from{opacity:0}to{opacity:1}}
-.modal{
-  background:var(--paper);
-  border-radius:var(--r-xl);
-  padding:32px 36px 28px;
-  max-width:480px;width:100%;
-  position:relative;
-  box-shadow:0 30px 80px rgba(0,0,0,0.3);
-  animation:rise .3s var(--ease);
-  max-height:90vh;overflow-y:auto;
-}
-.modal-x{
-  position:absolute;top:14px;right:14px;
-  width:32px;height:32px;border-radius:50%;
-  font-size:22px;line-height:1;color:var(--ink-3);
-  transition:background .15s, color .15s;
-}
-.modal-x:hover{background:var(--bg);color:var(--ink)}
-.modal-title{
-  font-family:var(--serif);font-size:24px;font-weight:600;
-  letter-spacing:-0.02em;
-  color:var(--ink);
-  margin-bottom:8px;line-height:1.15;
-}
-.modal-sub{
-  font-size:13.5px;line-height:1.5;
-  color:var(--ink-3);
-  margin-bottom:20px;
+function activeStreakLeader() {
+  let best = { streak: 0, player: null };
+  state.players.forEach(p => {
+    const s = streak(p.id);
+    if (s > best.streak) best = { streak: s, player: p };
+  });
+  return best;
 }
 
-/* ═══════════════ SETTINGS ═══════════════ */
-.settings-card{
-  background:var(--paper);
-  border:1px solid var(--line);
-  border-radius:var(--r-lg);
-  padding:24px 28px;
-  margin-bottom:14px;
-}
-.settings-row{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:12px 0;
-  border-bottom:1px solid var(--line-hairline);
-}
-.settings-row:last-child{border-bottom:none}
-.settings-label{font-size:13.5px;color:var(--ink-2);font-weight:500}
-.settings-value{font-size:13px;color:var(--ink);font-family:var(--mono)}
-
-/* Footer */
-footer{
-  border-top:1px solid var(--line);
-  background:var(--paper);
-  padding:18px 24px;
-  margin-top:32px;
-}
-.foot-inner{
-  max-width:1080px;margin:0 auto;
-  display:flex;align-items:center;justify-content:space-between;
-  font-size:11.5px;color:var(--ink-4);
-  font-family:var(--mono);
-  letter-spacing:0.04em;
+function streakStartDate(pid) {
+  const isMini = state.game !== 'maptap';
+  const dates = [...new Set(filteredScores().map(s => s.played_on))].sort((a, b) => b.localeCompare(a));
+  let lastWinDate = null;
+  for (const date of dates) {
+    const mine = filteredScores().find(s => s.player_id === pid && s.played_on === date);
+    const others = filteredScores().filter(s => s.player_id !== pid && s.played_on === date);
+    if (!mine || !others.length) continue;
+    const won = others.every(o => isMini ? mine.score < o.score : mine.score > o.score);
+    if (won) lastWinDate = date;
+    else break;
+  }
+  return lastWinDate;
 }
 
-/* ═══════════════ MOBILE ═══════════════ */
-@media (max-width:720px){
-  .auth-card{padding:32px 26px 28px}
-  .auth-title{font-size:26px}
-  .hdr-inner{padding:12px 18px;gap:8px}
-  .hdr-title{font-size:13px}
-  .hdr-actions{gap:6px}
-  .hdr-log-btn{padding:6px 11px 6px 9px;font-size:11.5px}
-  .hdr-name{display:none}
-  .hdr-acct{padding:4px}
-  .tabs-inner{padding:0 18px}
-  .tab{padding:12px 12px;font-size:12.5px}
-  .game-pills{padding:12px 18px}
-  main{padding:18px 18px 48px}
-  .hero-row{grid-template-columns:1fr;gap:10px}
-  .stats-grid{grid-template-columns:1fr 1fr}
-  .lb-head-row,.lb-row-full{grid-template-columns:32px 1fr 60px 60px}
-  .lb-head-row > :nth-child(5),.lb-head-row > :nth-child(6),
-  .lb-row-full > :nth-child(5),.lb-row-full > :nth-child(6){display:none}
-  .modal{padding:26px 22px 22px}
+// ═══════════════════════════════════════════════
+// RENDER ROUTER
+// ═══════════════════════════════════════════════
+function render() {
+  const root = document.getElementById('app');
+  if (state.view === 'auth') {
+    root.innerHTML = renderAuth();
+    bindAuth();
+  } else {
+    root.innerHTML = renderApp();
+    bindApp();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// AUTH SCREENS
+// ═══════════════════════════════════════════════
+function renderAuth() {
+  if (state.authMode === 'shortcut') return renderShortcutScreen();
+  if (state.authMode === 'signup') return renderSignUp();
+  return renderSignIn();
+}
+
+function renderSignIn() {
+  return `<div class="auth-shell"><div class="auth-card">
+    <div class="auth-mark">
+      <div class="auth-mark-dot">B</div>
+      <div class="auth-mark-text">The Daily Board</div>
+    </div>
+    <div class="auth-title">Welcome <em>back</em>.</div>
+    <div class="auth-sub">Sign in with your email to see today's scores.</div>
+    <div class="field"><label>Email</label><input id="signin-email" class="inp" type="email" placeholder="you@example.com"/></div>
+    <button class="btn-primary" id="signin-btn">Sign in</button>
+    <div class="auth-msg" id="auth-msg"></div>
+    <div class="auth-foot">New here? <button id="show-signup">Create an account</button></div>
+  </div></div>`;
+}
+
+function renderSignUp() {
+  return `<div class="auth-shell"><div class="auth-card">
+    <div class="auth-mark">
+      <div class="auth-mark-dot">B</div>
+      <div class="auth-mark-text">The Daily Board</div>
+    </div>
+    <div class="auth-title">Join the <em>board</em>.</div>
+    <div class="auth-sub">Create an account to start tracking your scores. Takes 30 seconds.</div>
+
+    <div class="photo-upload">
+      <div class="photo-preview" id="photo-preview"><span id="photo-initial">?</span></div>
+      <div class="photo-info">
+        <div class="photo-label-line">Profile photo</div>
+        <div class="photo-sub">Optional — initials work too</div>
+      </div>
+      <label class="photo-btn">
+        Upload
+        <input type="file" accept="image/*" id="signup-photo" style="display:none"/>
+      </label>
+    </div>
+
+    <div class="field"><label>Name</label><input id="signup-name" class="inp" placeholder="Your name"/></div>
+    <div class="field"><label>Email</label><input id="signup-email" class="inp" type="email" placeholder="you@example.com"/></div>
+    <button class="btn-primary" id="signup-btn">Create account</button>
+    <div class="auth-msg" id="auth-msg"></div>
+    <div class="auth-foot">Already have an account? <button id="show-signin">Sign in</button></div>
+  </div></div>`;
+}
+
+function renderShortcutScreen() {
+  const u = state.user;
+  return `<div class="auth-shell" style="align-items:flex-start;padding-top:60px">
+    <div class="auth-card" style="max-width:520px">
+      <div class="auth-mark">
+        <div class="auth-mark-dot">B</div>
+        <div class="auth-mark-text">The Daily Board</div>
+      </div>
+      <div class="auth-title">You're <em>in</em>, ${escapeHtml(u.name)}.</div>
+      <div class="auth-sub">One quick setup step: save this email as a contact called <strong>Daily Board</strong>. From any game, share to that contact and your score logs automatically — no typing.</div>
+
+      <div class="shortcut-step">
+        <div class="shortcut-eyebrow">Save this contact</div>
+        <div style="font-family:var(--mono);font-size:18px;color:#fff;font-weight:600;margin:8px 0 14px;word-break:break-all">scores@commonphoebedub.com</div>
+        <a class="shortcut-button" href="#" onclick="copyText('scores@commonphoebedub.com', this);return false;">Copy address</a>
+        <div class="shortcut-meta">
+          <span class="shortcut-meta-item">📇 Save once</span>
+          <span class="shortcut-meta-item">📤 Share any game</span>
+          <span class="shortcut-meta-item">⚡ Score logs in seconds</span>
+        </div>
+      </div>
+
+      <div class="step-list">
+        <div class="step-list-title">How it works</div>
+        <div class="step"><div class="step-num">1</div><div class="step-text">Save <strong>scores@commonphoebedub.com</strong> as a contact called "Daily Board"</div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-text">Finish the <strong>NYT Mini</strong> (or Maptap) as usual</div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-text">Tap <strong>Share → Mail → Daily Board → Send</strong></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-text">Score appears on your dashboard within a minute</div></div>
+      </div>
+
+      <div style="font-size:12.5px;color:var(--ink-3);line-height:1.55;margin-bottom:18px;padding:10px 14px;background:var(--bg);border-radius:8px">
+        💡 Make sure to send from <strong style="color:var(--ink)">${escapeHtml(u.email)}</strong> — that's the email we use to identify you.
+      </div>
+
+      <button class="btn-primary" id="goto-app">Continue to the board →</button>
+    </div>
+  </div>`;
+}
+
+function bindAuth() {
+  const $ = id => document.getElementById(id);
+
+  if (state.authMode === 'signin') {
+    $('signin-btn').onclick = handleSignIn;
+    $('signin-email').onkeydown = e => e.key === 'Enter' && handleSignIn();
+    $('show-signup').onclick = () => {
+      window._pendingPhoto = null;
+      state.authMode = 'signup';
+      render();
+    };
+  }
+  if (state.authMode === 'signup') {
+    $('signup-btn').onclick = handleSignUp;
+    $('signup-email').onkeydown = e => e.key === 'Enter' && handleSignUp();
+    $('show-signin').onclick = () => { state.authMode = 'signin'; render(); };
+    const nameInp = $('signup-name');
+    nameInp.oninput = () => {
+      const initial = nameInp.value.trim()[0];
+      $('photo-initial').textContent = initial ? initial.toUpperCase() : '?';
+    };
+    $('signup-photo').onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      // Validate file is an image
+      if (!file.type.startsWith('image/')) {
+        alert('Please choose an image file.');
+        return;
+      }
+      // Limit file size (rough check, will compress below)
+      if (file.size > 15 * 1024 * 1024) {
+        alert('Photo too large — please pick something under 15MB.');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = ev => {
+        // Compress the image so it's not huge in the database
+        compressImage(ev.target.result, (compressed) => {
+          const preview = document.getElementById('photo-preview');
+          preview.innerHTML = `<img src="${compressed}" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>`;
+          window._pendingPhoto = compressed;
+        });
+      };
+      reader.readAsDataURL(file);
+    };
+  }
+  if (state.authMode === 'shortcut') {
+    $('goto-app').onclick = () => { state.view = 'app'; render(); };
+  }
+}
+
+async function handleSignIn() {
+  const email = document.getElementById('signin-email').value.trim().toLowerCase();
+  const msg = document.getElementById('auth-msg');
+  if (!email) { msg.className = 'auth-msg error'; msg.textContent = 'Please enter your email.'; return; }
+  await loadData();
+  const found = state.players.find(p => (p.email || '').toLowerCase() === email);
+  if (!found) {
+    msg.className = 'auth-msg error';
+    msg.textContent = "We couldn't find that email. Try creating an account.";
+    return;
+  }
+  state.user = { ...found, avatar: localStorage.getItem(`av_${found.id}`) || found.avatar || null };
+  localStorage.setItem('gb_user', JSON.stringify(state.user));
+  state.view = 'app';
+  render();
+}
+
+async function handleSignUp() {
+  const name = document.getElementById('signup-name').value.trim();
+  const email = document.getElementById('signup-email').value.trim().toLowerCase();
+  const msg = document.getElementById('auth-msg');
+  if (!name || !email) { msg.className = 'auth-msg error'; msg.textContent = 'Name and email are required.'; return; }
+  if (!email.includes('@')) { msg.className = 'auth-msg error'; msg.textContent = 'Please enter a valid email.'; return; }
+  await loadData();
+  if (state.players.find(p => (p.email || '').toLowerCase() === email)) {
+    msg.className = 'auth-msg error'; msg.textContent = 'That email is already registered.'; return;
+  }
+  msg.className = 'auth-msg'; msg.textContent = 'Creating your account...'; msg.style.color = 'var(--ink-3)';
+  let player;
+  try {
+    player = await createPlayer({ name, email });
+  } catch (err) {
+    msg.className = 'auth-msg error';
+    msg.textContent = err.message || 'Something went wrong. Try again.';
+    return;
+  }
+  if (!player) { msg.className = 'auth-msg error'; msg.textContent = 'Something went wrong. Try again.'; return; }
+  if (window._pendingPhoto) {
+    localStorage.setItem(`av_${player.id}`, window._pendingPhoto);
+    player.avatar = window._pendingPhoto;
+    // Also save to the database so it shows up on other devices
+    try {
+      await updatePlayer({ id: player.id, avatar_url: window._pendingPhoto });
+    } catch (e) { console.error('Failed to save avatar to DB:', e); }
+    window._pendingPhoto = null;
+  }
+  state.user = player;
+  localStorage.setItem('gb_user', JSON.stringify(state.user));
+  state.authMode = 'shortcut';
+  render();
+}
+
+function installShortcut(e) {
+  e.preventDefault();
+  state.modal = 'shortcutGuide';
+  render();
+}
+
+// ═══════════════════════════════════════════════
+// APP SHELL
+// ═══════════════════════════════════════════════
+function renderApp() {
+  const tabs = [
+    ['dashboard', 'Dashboard'],
+    ['leaderboard', 'Leaderboard'],
+    ['records', 'Records'],
+    ['account', 'Account']
+  ];
+  const games = [
+    ['all', 'All Games'],
+    ['mini', 'NYT Mini'],
+    ['maptap', 'Maptap']
+  ];
+
+  const showGamePills = state.tab === 'dashboard' || state.tab === 'leaderboard' || state.tab === 'records';
+
+  return `<div class="app-shell">
+    <header class="hdr">
+      <div class="hdr-inner">
+        <div class="hdr-brand">
+          <div class="hdr-mark">B</div>
+          <div class="hdr-title">The <em>Daily</em> Board</div>
+        </div>
+        <div class="hdr-actions">
+          <button class="hdr-log-btn" id="hdr-log-score">
+            <span class="hdr-log-plus">+</span>
+            <span class="hdr-log-text">Log score</span>
+          </button>
+          <div class="hdr-acct" id="hdr-acct">
+            ${avatarHTML(state.user, 28, 'hdr-avatar')}
+            <span class="hdr-name">${escapeHtml(state.user.name)}</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div class="tabs"><div class="tabs-inner">
+      ${tabs.map(([id, label]) => `<button class="tab ${state.tab === id ? 'on' : ''}" data-tab="${id}">${label}</button>`).join('')}
+    </div></div>
+
+    ${showGamePills ? `<div class="game-pills"><div class="game-pills-inner">
+      ${games.map(([id, label]) => `<button class="pill ${state.game === id ? 'on' : ''}" data-game="${id}">${label}</button>`).join('')}
+    </div></div>` : ''}
+
+    <main>
+      ${renderTabContent()}
+    </main>
+
+    <footer><div class="foot-inner">
+      <span>The Daily Board</span>
+      <span>${state.scores.length} scores logged</span>
+    </div></footer>
+
+    ${state.modal ? renderModal() : ''}
+  </div>`;
+}
+
+function renderTabContent() {
+  switch (state.tab) {
+    case 'dashboard': return renderDashboard();
+    case 'leaderboard': return renderLeaderboard();
+    case 'records': return renderRecords();
+    case 'account': return renderAccount();
+    default: return '';
+  }
+}
+
+// ═══════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════
+function renderDashboard() {
+  const r = ranked();
+  if (!r.length) return renderEmptyDashboard();
+
+  const leader = r[0];
+  const sLead = activeStreakLeader();
+  const fs = filteredScores();
+
+  // Stats
+  const isMini = state.game !== 'maptap';
+  const overallBest = state.game === 'all'
+    ? findExtreme('mini', 'best')
+    : findExtreme(state.game, 'best');
+  const overallWorst = state.game === 'all'
+    ? findExtreme('mini', 'worst')
+    : findExtreme(state.game, 'worst');
+  const altBest = state.game === 'all' ? findExtreme('maptap', 'best') : null;
+  const totalDays = [...new Set(fs.map(s => s.played_on))].length;
+  const activePlayers = state.players.filter(p => fs.some(s => s.player_id === p.id)).length;
+
+  // Last 7 day wins
+  const sevenAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+  const recentWins = state.players.map(p => {
+    let wins = 0;
+    const recent = fs.filter(s => s.played_on >= sevenAgo);
+    const dates = [...new Set(recent.map(s => s.played_on))];
+    dates.forEach(d => {
+      const mine = recent.find(s => s.player_id === p.id && s.played_on === d);
+      const others = recent.filter(s => s.player_id !== p.id && s.played_on === d);
+      if (!mine || !others.length) return;
+      const won = others.every(o => isMini ? mine.score < o.score : mine.score > o.score);
+      if (won) wins++;
+    });
+    return { player: p, wins };
+  }).sort((a, b) => b.wins - a.wins);
+  const maxWins = Math.max(...recentWins.map(r => r.wins), 1);
+
+  // Stat cards depending on game
+  let statCards = '';
+  if (state.game === 'mini') {
+    statCards = `
+      ${statCard('Best Mini Time', overallBest ? fmtScore(overallBest.score, 'mini') : '—', overallBest?.player?.name, overallBest ? fmtDate(overallBest.played_on) : '', 'blue')}
+      ${statCard('Worst Mini Time', overallWorst ? fmtScore(overallWorst.score, 'mini') : '—', overallWorst?.player?.name, overallWorst ? fmtDate(overallWorst.played_on) : '', 'red')}
+      ${statCard('Days Played', totalDays, `${activePlayers} active`, 'all-time', '')}
+      ${statCard('Total Scores', fs.length, 'across players', '', '')}
+    `;
+  } else if (state.game === 'maptap') {
+    statCards = `
+      ${statCard('Best Maptap', overallBest ? fmtScore(overallBest.score, 'maptap') : '—', overallBest?.player?.name, overallBest ? fmtDate(overallBest.played_on) : '', 'gold')}
+      ${statCard('Worst Maptap', overallWorst ? fmtScore(overallWorst.score, 'maptap') : '—', overallWorst?.player?.name, overallWorst ? fmtDate(overallWorst.played_on) : '', 'red')}
+      ${statCard('Days Played', totalDays, `${activePlayers} active`, 'all-time', '')}
+      ${statCard('Total Scores', fs.length, 'across players', '', '')}
+    `;
+  } else {
+    const bestMini = findExtreme('mini', 'best');
+    const bestMap = findExtreme('maptap', 'best');
+    statCards = `
+      ${statCard('Best Mini Time', bestMini ? fmtScore(bestMini.score, 'mini') : '—', bestMini?.player?.name, bestMini ? fmtDate(bestMini.played_on) : '', 'blue')}
+      ${statCard('Best Maptap', bestMap ? fmtScore(bestMap.score, 'maptap') : '—', bestMap?.player?.name, bestMap ? fmtDate(bestMap.played_on) : '', 'gold')}
+      ${statCard('Days Played', totalDays, `${activePlayers} active`, 'all-time', '')}
+      ${statCard('Total Scores', fs.length, 'across players', '', '')}
+    `;
+  }
+
+  return `
+    <div class="hero-row">
+      <div class="leader-card">
+        <div class="leader-eyebrow">Currently leading</div>
+        <div class="leader-row">
+          ${avatarHTML(leader.player, 62, 'leader-av')}
+          <div>
+            <div class="leader-name">${escapeHtml(leader.player.name)}</div>
+            <div class="leader-stat">${leader.stats.winPct}% win rate · ${leader.stats.wins}W–${leader.stats.losses}L</div>
+          </div>
+        </div>
+      </div>
+      ${sLead.streak >= 2 ? `
+        <div class="streak-card">
+          <div class="streak-circle"><span class="streak-num">${sLead.streak}</span></div>
+          <div class="streak-info">
+            <div class="streak-eyebrow">Hot streak</div>
+            <div class="streak-detail">${escapeHtml(sLead.player.name)} — ${sLead.streak} in a row</div>
+            <div class="streak-since">since ${fmtDate(streakStartDate(sLead.player.id))}</div>
+          </div>
+        </div>
+      ` : `
+        <div class="streak-card">
+          <div class="streak-circle" style="background:var(--bg)"><span class="streak-num" style="color:var(--ink-4)">—</span></div>
+          <div class="streak-info">
+            <div class="streak-eyebrow">No active streak</div>
+            <div class="streak-detail">Anyone's game</div>
+            <div class="streak-since">2+ wins in a row to start one</div>
+          </div>
+        </div>
+      `}
+    </div>
+
+    <div class="stats-grid">${statCards}</div>
+
+    <div class="section-head">
+      <div class="section-title">Top of the table</div>
+      <button class="section-link" data-tab-link="leaderboard">View full leaderboard →</button>
+    </div>
+
+    <div class="ranks">
+      ${r.slice(0, 3).map((row, i) => renderRankRow(row, i, true)).join('')}
+    </div>
+
+    <div class="trend">
+      <div class="trend-head">
+        <div class="trend-title">Last 7 days</div>
+        <div class="trend-sub">wins per player</div>
+      </div>
+      ${recentWins.map((rw, i) => `
+        <div class="bar-row">
+          <div class="bar-name">${escapeHtml(rw.player.name)}</div>
+          <div class="bar-track"><div class="bar-fill" style="width:${rw.wins / maxWins * 100}%;background:${i === 0 ? 'var(--royal)' : i === 1 ? 'var(--ink-2)' : 'var(--ink-4)'}"></div></div>
+          <div class="bar-val">${rw.wins} ${rw.wins === 1 ? 'win' : 'wins'}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function statCard(label, num, who, when, colorCls) {
+  return `<div class="stat-card">
+    <div class="stat-label">${label}</div>
+    <div class="stat-num ${colorCls}">${num}</div>
+    <div class="stat-meta">
+      <span class="stat-who">${who || ''}</span>
+      <span class="stat-when">${when || ''}</span>
+    </div>
+  </div>`;
+}
+
+function renderRankRow(row, i, preview = false) {
+  const { player: p, stats: s, streak: str } = row;
+  const rankCls = i === 0 ? 'r1' : i === 1 ? 'r2' : i === 2 ? 'r3' : '';
+  const rowCls = i === 0 ? 'rank-row first' : 'rank-row';
+  return `<div class="${rowCls}">
+    <div class="rank-num ${rankCls}">${i + 1}</div>
+    <div class="rank-player">
+      ${avatarHTML(p, 36, 'rank-av')}
+      <div class="rank-info">
+        <div class="rank-name">${escapeHtml(p.name)}${str >= 2 ? `<span class="streak-tag">${str} streak</span>` : ''}</div>
+        <div class="rank-meta">avg ${fmtScore(s.avg, state.game === 'all' ? 'mini' : state.game)} · best ${fmtScore(s.best, state.game === 'all' ? 'mini' : state.game)}</div>
+      </div>
+    </div>
+    <div class="rank-pct">${s.winPct}<span class="pct-sym">%</span></div>
+    <div class="rank-record">${s.wins}–${s.losses}</div>
+  </div>`;
+}
+
+function renderEmptyDashboard() {
+  return `<div class="empty">
+    <div class="empty-text">No scores logged yet.</div>
+    <div class="empty-sub">Play a round of NYT Mini or Maptap and log your first score to see the dashboard come to life.</div>
+  </div>`;
+}
+
+// ═══════════════════════════════════════════════
+// LEADERBOARD
+// ═══════════════════════════════════════════════
+function renderLeaderboard() {
+  const r = ranked();
+  if (!r.length) return renderEmptyDashboard();
+
+  const isMini = state.game !== 'maptap';
+  const fmtFor = (v) => fmtScore(v, state.game === 'all' ? 'mini' : state.game);
+
+  return `
+    <div class="section-head" style="margin-top:0">
+      <div class="section-title">Full standings — ${state.game === 'all' ? 'all games' : state.game === 'mini' ? 'NYT Mini' : 'Maptap'}</div>
+      <span class="section-title" style="color:var(--ink-4)">Sorted by win rate</span>
+    </div>
+
+    <div class="lb-table-wrap">
+      <div class="lb-head-row">
+        <span style="text-align:center">#</span>
+        <span>Player</span>
+        <span class="right">Win %</span>
+        <span class="right">W–L–T</span>
+        <span class="right">Avg</span>
+        <span class="right">Best</span>
+      </div>
+      ${r.map((row, i) => {
+        const { player: p, stats: s, streak: str } = row;
+        const rankCls = i === 0 ? 'r1' : i === 1 ? 'r2' : i === 2 ? 'r3' : '';
+        const rowCls = i === 0 ? 'lb-row-full first' : 'lb-row-full';
+        return `<div class="${rowCls}">
+          <div class="rank-num ${rankCls}">${i + 1}</div>
+          <div class="rank-player">
+            ${avatarHTML(p, 36, 'rank-av')}
+            <div class="rank-info">
+              <div class="rank-name">${escapeHtml(p.name)}${str >= 2 ? `<span class="streak-tag">${str} streak</span>` : ''}</div>
+              <div class="rank-meta">${s.count} scores</div>
+            </div>
+          </div>
+          <div class="rank-stat primary">${s.winPct}%</div>
+          <div class="rank-stat">${s.wins}–${s.losses}–${s.ties}</div>
+          <div class="rank-stat muted">${fmtFor(s.avg)}</div>
+          <div class="rank-stat" style="color:var(--gold-deep);font-weight:600">${fmtFor(s.best)}</div>
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+// ═══════════════════════════════════════════════
+// RECORDS
+// ═══════════════════════════════════════════════
+function renderRecords() {
+  const fs = filteredScores();
+  if (!fs.length) return renderEmptyDashboard();
+  const isMini = state.game !== 'maptap';
+
+  const records = [];
+
+  if (state.game === 'all') {
+    const bestMini = findExtreme('mini', 'best');
+    const worstMini = findExtreme('mini', 'worst');
+    const bestMap = findExtreme('maptap', 'best');
+    const worstMap = findExtreme('maptap', 'worst');
+    if (bestMini) records.push({ label: 'Fastest Mini Solve', value: fmtScore(bestMini.score, 'mini'), who: bestMini.player?.name, when: fmtDate(bestMini.played_on), color: 'blue' });
+    if (worstMini) records.push({ label: 'Slowest Mini Solve', value: fmtScore(worstMini.score, 'mini'), who: worstMini.player?.name, when: fmtDate(worstMini.played_on), color: 'red' });
+    if (bestMap) records.push({ label: 'Highest Maptap', value: fmtScore(bestMap.score, 'maptap'), who: bestMap.player?.name, when: fmtDate(bestMap.played_on), color: 'gold' });
+    if (worstMap) records.push({ label: 'Lowest Maptap', value: fmtScore(worstMap.score, 'maptap'), who: worstMap.player?.name, when: fmtDate(worstMap.played_on), color: '' });
+  } else {
+    const game = state.game;
+    const best = findExtreme(game, 'best');
+    const worst = findExtreme(game, 'worst');
+    if (best) records.push({ label: isMini ? 'Fastest Solve' : 'Highest Score', value: fmtScore(best.score, game), who: best.player?.name, when: fmtDate(best.played_on), color: 'blue' });
+    if (worst) records.push({ label: isMini ? 'Slowest Solve' : 'Lowest Score', value: fmtScore(worst.score, game), who: worst.player?.name, when: fmtDate(worst.played_on), color: 'red' });
+  }
+
+  // Per-player bests
+  state.players.forEach(p => {
+    const ps = fs.filter(s => s.player_id === p.id);
+    if (!ps.length) return;
+    const bestS = ps.reduce((a, b) => (isMini ? a.score < b.score : a.score > b.score) ? a : b);
+    records.push({
+      label: `${p.name}'s personal best`,
+      value: fmtScore(bestS.score, state.game === 'all' ? 'mini' : state.game),
+      who: 'set',
+      when: fmtDate(bestS.played_on),
+      color: ''
+    });
+  });
+
+  // Streaks
+  state.players.forEach(p => {
+    const str = streak(p.id);
+    if (str >= 2) records.push({
+      label: `${p.name}'s active streak`,
+      value: `${str}`,
+      who: 'wins in a row',
+      when: `since ${fmtDate(streakStartDate(p.id))}`,
+      color: 'gold'
+    });
+  });
+
+  return `
+    <div class="section-head" style="margin-top:0">
+      <div class="section-title">Hall of records</div>
+      <span class="section-title" style="color:var(--ink-4)">${state.game === 'all' ? 'All games' : state.game === 'mini' ? 'NYT Mini' : 'Maptap'}</span>
+    </div>
+    <div class="records-grid">
+      ${records.map(r => `
+        <div class="record-card">
+          <div class="record-eyebrow">${r.label}</div>
+          <div class="record-big ${r.color}">${r.value}</div>
+          <div class="record-meta">
+            <span class="record-who">${r.who || ''}</span>
+            <span class="record-when">${r.when || ''}</span>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+// ═══════════════════════════════════════════════
+// ACCOUNT
+// ═══════════════════════════════════════════════
+function renderAccount() {
+  const u = state.user;
+  return `
+    <div class="settings-card">
+      <div style="display:flex;align-items:center;gap:18px;margin-bottom:20px">
+        ${avatarHTML(u, 64, 'rank-av')}
+        <div>
+          <div style="font-family:var(--serif);font-size:24px;font-weight:600;letter-spacing:-0.02em">${escapeHtml(u.name)}</div>
+          <div style="font-size:13px;color:var(--ink-3);margin-top:2px">${escapeHtml(u.email)}</div>
+        </div>
+        <button class="btn-secondary" id="edit-profile" style="margin-left:auto">Edit profile</button>
+      </div>
+
+      <div class="settings-row">
+        <span class="settings-label">Player token</span>
+        <span class="settings-value">${u.token.slice(0, 12)}…</span>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Member since</span>
+        <span class="settings-value" style="font-family:var(--sans)">today</span>
+      </div>
+    </div>
+
+    <div class="settings-card">
+      <div style="font-size:14px;font-weight:600;margin-bottom:6px">Share scores by email</div>
+      <div style="font-size:13px;color:var(--ink-3);line-height:1.55;margin-bottom:14px">
+        Save the address below as a contact called <strong>"Daily Board"</strong> on your phone.
+        Then from any game (NYT Mini, Maptap), tap <strong>Share → Mail → Daily Board → Send</strong>.
+        Your score lands here in seconds. <strong>Make sure to send from <span style="color:var(--royal)">${escapeHtml(state.user.email)}</span></strong> — that's the email tied to your account.
+      </div>
+
+      <div style="background:var(--gold-bg);border:1px solid rgba(212,169,69,0.3);border-radius:10px;padding:14px 16px;margin-bottom:14px">
+        <div style="font-family:var(--mono);font-size:11px;color:var(--gold-deep);font-weight:600;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:6px">Send scores to</div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-family:var(--mono);font-size:14px;color:var(--ink);font-weight:600">scores@commonphoebedub.com</span>
+          <button class="copy-btn-sm" onclick="copyText('scores@commonphoebedub.com', this)">copy</button>
+        </div>
+      </div>
+
+      <details style="font-size:12.5px;color:var(--ink-3);line-height:1.55">
+        <summary style="cursor:pointer;font-weight:500;color:var(--ink-2);padding:4px 0">How to save it as a contact (1 minute, one time)</summary>
+        <div style="padding:8px 0 0 4px">
+          1. Open the <strong>Contacts</strong> app on your phone<br/>
+          2. Tap <strong>+</strong> to add a new contact<br/>
+          3. Name: <strong>Daily Board</strong><br/>
+          4. Email: <strong>scores@commonphoebedub.com</strong><br/>
+          5. Save<br/><br/>
+          From now on, any game's share button → <strong>Mail</strong> → start typing "Daily" → tap the contact → tap Send. Done.
+        </div>
+      </details>
+    </div>
+
+    <div class="settings-card">
+      <div style="font-size:14px;font-weight:600;margin-bottom:6px">Log a score manually</div>
+      <div style="font-size:13px;color:var(--ink-3);line-height:1.5;margin-bottom:14px">Quick way to enter today's score, backfill an old one, or log Maptap.</div>
+      <button class="btn-secondary" id="log-score">Log a score</button>
+    </div>
+
+    <div class="settings-card">
+      <button class="btn-ghost" id="logout" style="color:var(--ink-3)">Sign out</button>
+      <button class="btn-ghost" id="delete-account" style="color:var(--loss);margin-left:8px">Delete account</button>
+    </div>
+  `;
+}
+
+// ═══════════════════════════════════════════════
+// MODALS
+// ═══════════════════════════════════════════════
+function renderModal() {
+  if (state.modal === 'logScore') return renderLogScoreModal();
+  if (state.modal === 'shortcut') return renderShortcutModal();
+  if (state.modal === 'shortcutGuide') return renderShortcutGuideModal();
+  if (state.modal === 'editProfile') return renderEditProfileModal();
+  if (state.modal === 'deleteAccount') return renderDeleteAccountModal();
+  return '';
+}
+
+function renderLogScoreModal() {
+  return `<div class="modal-back" id="modal-back">
+    <div class="modal">
+      <button class="modal-x" id="modal-close">×</button>
+      <div class="modal-title">Log a <em style="font-style:italic;color:var(--royal)">score</em>.</div>
+      <div class="modal-sub">Pick a game and enter your score for ${fmtDate(todayStr())}.</div>
+
+      <div class="field"><label>Game</label>
+        <select id="ls-game" class="inp">
+          <option value="mini">NYT Mini</option>
+          <option value="maptap">Maptap</option>
+        </select>
+      </div>
+
+      <div class="field" id="ls-time-group"><label>Time (m:ss)</label>
+        <div style="display:flex;align-items:center;gap:8px">
+          <input id="ls-min" class="inp" maxlength="2" placeholder="0" style="width:60px;text-align:center;font-family:var(--mono)"/>
+          <span style="font-size:18px;color:var(--ink-3);font-weight:600">:</span>
+          <input id="ls-sec" class="inp" maxlength="2" placeholder="00" style="width:60px;text-align:center;font-family:var(--mono)"/>
+        </div>
+      </div>
+
+      <div class="field" id="ls-score-group" style="display:none"><label>Score</label>
+        <input id="ls-score" type="number" class="inp" placeholder="847"/>
+      </div>
+
+      <div class="field"><label>Date</label>
+        <input id="ls-date" type="date" class="inp" value="${todayStr()}" max="${todayStr()}"/>
+      </div>
+
+      <button class="btn-primary" id="ls-submit" style="margin-top:8px">Log score</button>
+      <div class="auth-msg" id="ls-msg"></div>
+    </div>
+  </div>`;
+}
+
+function renderShortcutModal() {
+  const u = state.user;
+  const apiUrl = window.location.origin + '/api/data';
+  return `<div class="modal-back" id="modal-back">
+    <div class="modal" style="max-width:560px">
+      <button class="modal-x" id="modal-close">×</button>
+      <div class="modal-title">Your <em style="font-style:italic;color:var(--royal)">shortcut</em>.</div>
+      <div class="modal-sub">Submit scores from your iPhone share sheet. Setup takes about 5 minutes — you only do it once.</div>
+
+      <div class="shortcut-step" style="margin-bottom:14px">
+        <div class="shortcut-eyebrow">Your details</div>
+        <div style="font-family:var(--mono);font-size:12px;color:rgba(255,255,255,0.85);line-height:1.7;margin-top:8px">
+          <div><span style="color:var(--gold)">Name:</span> ${escapeHtml(u.name)}</div>
+          <div><span style="color:var(--gold)">Token:</span> ${u.token}</div>
+          <div><span style="color:var(--gold)">API:</span> ${apiUrl}</div>
+        </div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.6);margin-top:10px;line-height:1.5">Copy these — you'll paste them into the shortcut. Or tap the buttons below to copy them individually.</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
+          <button class="copy-btn" onclick="copyText('${u.token}', this)">Copy token</button>
+          <button class="copy-btn" onclick="copyText('${apiUrl}', this)">Copy API URL</button>
+        </div>
+      </div>
+
+      <a class="btn-primary" href="#" onclick="installShortcut(event)" style="display:block;text-align:center;margin-bottom:10px">Show me how to set it up →</a>
+
+      <div style="font-size:12px;color:var(--ink-3);text-align:center;line-height:1.5">After setup, scores submit in one tap from the iOS share sheet — no need to come back to this site.</div>
+    </div>
+  </div>`;
+}
+
+function renderShortcutGuideModal() {
+  const u = state.user;
+  const apiUrl = window.location.origin + '/api/data';
+
+  return `<div class="modal-back" id="modal-back">
+    <div class="modal" style="max-width:600px;max-height:90vh;overflow-y:auto">
+      <button class="modal-x" id="modal-close">×</button>
+      <div class="modal-title">Set up your <em style="font-style:italic;color:var(--royal)">shortcut</em>.</div>
+      <div class="modal-sub">Follow these steps once on your iPhone. Then submitting scores is one tap from the share sheet.</div>
+
+      <div style="background:var(--gold-bg);border:1px solid rgba(212,169,69,0.3);border-radius:10px;padding:14px 16px;margin-bottom:18px">
+        <div style="font-family:var(--mono);font-size:11px;color:var(--gold-deep);font-weight:600;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px">Have these ready</div>
+        <div style="font-family:var(--mono);font-size:12px;color:var(--ink);line-height:1.7;word-break:break-all">
+          <div style="margin-bottom:6px"><strong style="color:var(--royal)">Your token:</strong><br/><span id="tok-text">${u.token}</span> <button class="copy-btn-sm" onclick="copyText('${u.token}', this)">copy</button></div>
+          <div><strong style="color:var(--royal)">API URL:</strong><br/><span id="api-text">${apiUrl}</span> <button class="copy-btn-sm" onclick="copyText('${apiUrl}', this)">copy</button></div>
+        </div>
+      </div>
+
+      <div class="step-list-title" style="margin-bottom:10px">Steps (on your iPhone)</div>
+
+      <div class="guide-step">
+        <div class="guide-num">1</div>
+        <div class="guide-text">
+          <strong>Open the Shortcuts app</strong> (it's pre-installed on iPhone). If you don't have it, download free from the App Store.
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">2</div>
+        <div class="guide-text">
+          Tap the <strong>+</strong> in the top-right to create a new shortcut. Name it <strong>"Log to Board"</strong>.
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">3</div>
+        <div class="guide-text">
+          Tap <strong>Add Action</strong> → search for <strong>"Get Contents of URL"</strong> and add it.
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">4</div>
+        <div class="guide-text">
+          For the URL, paste:<br/>
+          <code style="display:inline-block;background:var(--bg);padding:4px 8px;border-radius:4px;font-size:11.5px;margin-top:4px;word-break:break-all">${apiUrl}</code>
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">5</div>
+        <div class="guide-text">
+          Expand the action's options. Set <strong>Method</strong> to <strong>POST</strong>. Under <strong>Headers</strong>, add:<br/>
+          <span style="font-family:var(--mono);font-size:11.5px;background:var(--bg);padding:2px 6px;border-radius:3px">Content-Type: application/json</span>
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">6</div>
+        <div class="guide-text">
+          Set <strong>Request Body</strong> to <strong>JSON</strong>. Add these fields:
+          <div style="background:var(--bg);padding:10px 12px;border-radius:6px;font-family:var(--mono);font-size:11.5px;margin-top:6px;line-height:1.7">
+            <div><strong>action</strong> = postScore</div>
+            <div><strong>playerId</strong> = ${u.id}</div>
+            <div><strong>game</strong> = mini <em style="color:var(--ink-4)">(or "maptap")</em></div>
+            <div><strong>score</strong> = <em style="color:var(--ink-4)">(your time in seconds, e.g. 47)</em></div>
+            <div><strong>played_on</strong> = <em style="color:var(--ink-4)">(today's date, YYYY-MM-DD)</em></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">7</div>
+        <div class="guide-text">
+          Tap the shortcut's <strong>settings (i icon)</strong> at the bottom. Toggle on <strong>"Show in Share Sheet"</strong>.
+        </div>
+      </div>
+
+      <div class="guide-step">
+        <div class="guide-num">8</div>
+        <div class="guide-text">
+          Done! Now from the NYT Mini app, tap <strong>Share → Log to Board</strong> after solving.
+        </div>
+      </div>
+
+      <div style="background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-top:18px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:6px">Easier alternative</div>
+        <div style="font-size:12.5px;color:var(--ink-3);line-height:1.5">If the shortcut feels like too much hassle, you can always log scores manually from the <strong>Account</strong> tab. The shortcut is optional — it just makes daily logging faster.</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderDeleteAccountModal() {
+  return `<div class="modal-back" id="modal-back">
+    <div class="modal" style="max-width:440px">
+      <button class="modal-x" id="modal-close">×</button>
+      <div class="modal-title" style="color:var(--loss)">Delete account?</div>
+      <div class="modal-sub">This will permanently remove <strong>${escapeHtml(state.user.name)}</strong> and all of your scores. Other players' scores stay. This can't be undone.</div>
+      <div style="display:flex;gap:8px;margin-top:18px">
+        <button class="btn-secondary" id="del-cancel" style="flex:1">Cancel</button>
+        <button class="btn-primary" id="del-confirm" style="flex:1;background:var(--loss)">Delete forever</button>
+      </div>
+      <div class="auth-msg" id="del-msg"></div>
+    </div>
+  </div>`;
+}
+
+function renderEditProfileModal() {
+  const u = state.user;
+  return `<div class="modal-back" id="modal-back">
+    <div class="modal">
+      <button class="modal-x" id="modal-close">×</button>
+      <div class="modal-title">Edit profile</div>
+      <div class="modal-sub">Update your name and photo.</div>
+
+      <div class="photo-upload">
+        ${avatarHTML(u, 54, 'photo-preview')}
+        <div class="photo-info">
+          <div class="photo-label-line">Profile photo</div>
+          <div class="photo-sub">Tap upload to change</div>
+        </div>
+        <label class="photo-btn">
+          Upload
+          <input type="file" accept="image/*" id="ep-photo" style="display:none"/>
+        </label>
+      </div>
+
+      <div class="field"><label>Name</label><input id="ep-name" class="inp" value="${escapeHtml(u.name)}"/></div>
+      <button class="btn-primary" id="ep-save" style="margin-top:8px">Save changes</button>
+      <div class="auth-msg" id="ep-msg"></div>
+    </div>
+  </div>`;
+}
+
+// ═══════════════════════════════════════════════
+// APP BINDINGS
+// ═══════════════════════════════════════════════
+function bindApp() {
+  // Tabs
+  document.querySelectorAll('.tab').forEach(b => b.onclick = () => { state.tab = b.dataset.tab; render(); });
+  document.querySelectorAll('[data-tab-link]').forEach(b => b.onclick = () => { state.tab = b.dataset.tabLink; render(); });
+
+  // Game pills
+  document.querySelectorAll('.pill').forEach(b => b.onclick = () => { state.game = b.dataset.game; render(); });
+
+  // Header account
+  const acct = document.getElementById('hdr-acct');
+  if (acct) acct.onclick = () => { state.tab = 'account'; render(); };
+
+  // Header log score button (visible on every tab)
+  const hdrLog = document.getElementById('hdr-log-score');
+  if (hdrLog) hdrLog.onclick = () => { state.modal = 'logScore'; render(); };
+
+  // Account actions
+  const editBtn = document.getElementById('edit-profile');
+  if (editBtn) editBtn.onclick = () => {
+    window._pendingPhoto = null;
+    state.modal = 'editProfile';
+    render();
+  };
+  const logBtn = document.getElementById('log-score');
+  if (logBtn) logBtn.onclick = () => { state.modal = 'logScore'; render(); };
+  const logoutBtn = document.getElementById('logout');
+  if (logoutBtn) logoutBtn.onclick = () => {
+    localStorage.removeItem('gb_user');
+    state.user = null;
+    state.view = 'auth';
+    state.authMode = 'signin';
+    render();
+  };
+  const delBtn = document.getElementById('delete-account');
+  if (delBtn) delBtn.onclick = () => { state.modal = 'deleteAccount'; render(); };
+
+  // Modal bindings
+  if (state.modal) {
+    const closeBtn = document.getElementById('modal-close');
+    const back = document.getElementById('modal-back');
+    if (closeBtn) closeBtn.onclick = () => { state.modal = null; render(); };
+    if (back) back.onclick = (e) => { if (e.target === back) { state.modal = null; render(); } };
+
+    if (state.modal === 'logScore') {
+      const gameSel = document.getElementById('ls-game');
+      gameSel.onchange = () => {
+        document.getElementById('ls-time-group').style.display = gameSel.value === 'mini' ? 'flex' : 'none';
+        document.getElementById('ls-score-group').style.display = gameSel.value === 'maptap' ? 'flex' : 'none';
+      };
+      document.getElementById('ls-submit').onclick = handleLogScore;
+    }
+
+    if (state.modal === 'editProfile') {
+      const photoIn = document.getElementById('ep-photo');
+      photoIn.onchange = (e) => {
+        const file = e.target.files[0]; if (!file) return;
+        if (!file.type.startsWith('image/')) { alert('Please choose an image file.'); return; }
+        if (file.size > 15 * 1024 * 1024) { alert('Photo too large — pick under 15MB.'); return; }
+        const reader = new FileReader();
+        reader.onload = ev => {
+          compressImage(ev.target.result, (compressed) => {
+            const preview = document.querySelector('#modal-back .photo-preview');
+            if (preview) preview.innerHTML = `<img src="${compressed}" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>`;
+            window._pendingPhoto = compressed;
+          });
+        };
+        reader.readAsDataURL(file);
+      };
+      document.getElementById('ep-save').onclick = handleSaveProfile;
+    }
+
+    if (state.modal === 'deleteAccount') {
+      const cancel = document.getElementById('del-cancel');
+      const confirm = document.getElementById('del-confirm');
+      if (cancel) cancel.onclick = () => { state.modal = null; render(); };
+      if (confirm) confirm.onclick = handleDeleteAccount;
+    }
+  }
+}
+
+async function handleDeleteAccount() {
+  const msg = document.getElementById('del-msg');
+  msg.className = 'auth-msg'; msg.textContent = 'Deleting...'; msg.style.color = 'var(--ink-3)';
+  const ok = await deletePlayer(state.user.id);
+  if (!ok) {
+    msg.className = 'auth-msg error'; msg.textContent = 'Failed to delete. Try again.';
+    return;
+  }
+  // Clean up local data
+  localStorage.removeItem(`av_${state.user.id}`);
+  localStorage.removeItem('gb_user');
+  state.user = null;
+  state.view = 'auth';
+  state.authMode = 'signin';
+  state.modal = null;
+  await loadData();
+  render();
+}
+
+async function handleLogScore() {
+  const game = document.getElementById('ls-game').value;
+  const date = document.getElementById('ls-date').value;
+  const msg = document.getElementById('ls-msg');
+
+  if (!date) { msg.className = 'auth-msg error'; msg.textContent = 'Pick a date.'; return; }
+  // Don't allow future dates
+  if (date > todayStr()) {
+    msg.className = 'auth-msg error'; msg.textContent = "You can't log a future date.";
+    return;
+  }
+
+  let score;
+  if (game === 'mini') {
+    const m = document.getElementById('ls-min').value;
+    const s = document.getElementById('ls-sec').value;
+    if (!m && !s) { msg.className = 'auth-msg error'; msg.textContent = 'Enter a time.'; return; }
+    const mins = parseInt(m) || 0;
+    const secs = parseInt(s) || 0;
+    if (secs >= 60) { msg.className = 'auth-msg error'; msg.textContent = 'Seconds must be 0–59.'; return; }
+    score = mins * 60 + secs;
+    if (score === 0) { msg.className = 'auth-msg error'; msg.textContent = 'Time must be greater than 0.'; return; }
+    if (score > 3600) { msg.className = 'auth-msg error'; msg.textContent = 'That seems too long — under an hour, please.'; return; }
+  } else {
+    score = document.getElementById('ls-score').value;
+    if (!score) { msg.className = 'auth-msg error'; msg.textContent = 'Enter a score.'; return; }
+    score = parseInt(score);
+    if (isNaN(score) || score < 0) { msg.className = 'auth-msg error'; msg.textContent = 'Enter a valid score.'; return; }
+  }
+
+  msg.className = 'auth-msg'; msg.textContent = 'Saving...'; msg.style.color = 'var(--ink-3)';
+  const ok = await postScore(state.user.id, game, score, date);
+  if (ok) {
+    msg.className = 'auth-msg success'; msg.textContent = '✓ Score logged.';
+    setTimeout(() => { state.modal = null; render(); }, 900);
+  } else {
+    msg.className = 'auth-msg error'; msg.textContent = 'Error saving. Try again.';
+  }
+}
+
+async function handleSaveProfile() {
+  const name = document.getElementById('ep-name').value.trim();
+  const msg = document.getElementById('ep-msg');
+  if (!name) { msg.className = 'auth-msg error'; msg.textContent = 'Name is required.'; return; }
+
+  msg.className = 'auth-msg'; msg.textContent = 'Saving...'; msg.style.color = 'var(--ink-3)';
+
+  // Save to database — only send avatar if a new photo was selected
+  const payload = { id: state.user.id, name };
+  if (window._pendingPhoto) payload.avatar_url = window._pendingPhoto;
+  const updated = await updatePlayer(payload);
+  if (!updated) {
+    msg.className = 'auth-msg error'; msg.textContent = 'Failed to save. Try again.';
+    return;
+  }
+
+  state.user.name = name;
+  if (window._pendingPhoto) {
+    localStorage.setItem(`av_${state.user.id}`, window._pendingPhoto);
+    state.user.avatar = window._pendingPhoto;
+    window._pendingPhoto = null;
+  }
+  // Update player record locally
+  const idx = state.players.findIndex(p => p.id === state.user.id);
+  if (idx >= 0) state.players[idx] = { ...state.players[idx], ...state.user };
+  localStorage.setItem('gb_user', JSON.stringify(state.user));
+  msg.className = 'auth-msg success'; msg.textContent = '✓ Saved.';
+  setTimeout(() => { state.modal = null; render(); }, 600);
 }
