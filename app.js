@@ -513,6 +513,94 @@ function activeStreakLeader() {
   return best;
 }
 
+// "Today" section — side-by-side cards showing every player's score today
+// for each game (or both, on All Games). Always renders so the user can see
+// "nobody's played yet" at a glance.
+function renderTodaySection() {
+  const today = todayStr();
+  const games = state.game === 'all' ? ['mini', 'maptap'] : [state.game];
+
+  // Sort players: anyone who's played any game today first, alphabetical thereafter
+  const sortedPlayers = [...state.players].sort((a, b) => {
+    const aPlayed = state.scores.some(s => s.player_id === a.id && s.played_on === today);
+    const bPlayed = state.scores.some(s => s.player_id === b.id && s.played_on === today);
+    if (aPlayed !== bPlayed) return aPlayed ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  if (!sortedPlayers.length) return '';
+
+  const cards = games.map(g => renderTodayCard(g, today, sortedPlayers)).join('');
+
+  return `
+    <div class="section-head">
+      <div class="section-title">Today</div>
+      <span class="section-title" style="color:var(--ink-4)">${fmtDateLong(today)}</span>
+    </div>
+    <div class="today-grid${games.length === 1 ? ' today-grid-single' : ''}">${cards}</div>
+  `;
+}
+
+function renderTodayCard(game, today, players) {
+  const isMini = game === 'mini';
+  const gameLabel = isMini ? 'NYT Mini' : 'Maptap';
+
+  // Get today's scores for this game
+  const todayScores = state.scores.filter(s => s.played_on === today && s.game === game);
+
+  // Determine the leader (lowest Mini, highest Maptap)
+  let winnerId = null;
+  if (todayScores.length >= 1) {
+    const sorted = [...todayScores].sort((a, b) => isMini ? a.score - b.score : b.score - a.score);
+    // Only mark a winner if there are 2+ scores (otherwise it's "no contest")
+    if (todayScores.length >= 2 && sorted[0].score !== sorted[1].score) {
+      winnerId = sorted[0].player_id;
+    }
+  }
+
+  const playedCount = todayScores.length;
+  const status = playedCount === 0 ? 'No scores yet'
+    : playedCount === 1 ? 'Waiting on others'
+    : playedCount < players.length ? `${playedCount} of ${players.length} played`
+    : 'All in';
+
+  return `
+    <div class="today-card">
+      <div class="today-card-head">
+        <span class="today-card-game">${gameLabel}</span>
+        <span class="today-card-status">${status}</span>
+      </div>
+      <div class="today-card-rows">
+        ${players.map(p => {
+          const score = todayScores.find(s => s.player_id === p.id);
+          const isWinner = winnerId === p.id;
+          const cls = isWinner ? 'today-row today-row-winner' : 'today-row';
+          const valueHTML = score
+            ? `<span class="today-row-val">${fmtScore(score.score, game)}${score.source === 'email' ? ' <span class="today-email">✉</span>' : ''}</span>`
+            : `<span class="today-row-empty">—</span>`;
+          return `
+            <div class="${cls}">
+              ${avatarHTML(p, 28, 'today-av')}
+              <span class="today-row-name">${escapeHtml(p.name)}</span>
+              ${isWinner ? '<span class="today-star">★</span>' : ''}
+              ${valueHTML}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function fmtDateLong(str) {
+  if (str === todayStr()) {
+    const d = new Date();
+    return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  }
+  const d = new Date(str + 'T12:00:00');
+  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+}
+
 // "Waiting on" banner — shows when at least one player has logged a score
 // today and at least one other player hasn't. Helps make "no contest" days
 // feel less ambiguous.
@@ -1026,6 +1114,11 @@ function renderDashboard() {
       `}
     </div>
 
+    ${renderTodaySection()}
+
+    <div class="section-head">
+      <div class="section-title">All-time records</div>
+    </div>
     <div class="stats-grid">${statCards}</div>
 
     <div class="section-head">
