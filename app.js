@@ -807,6 +807,25 @@ function renderDashboard() {
     `;
   }
 
+  // Build the leader's stat line based on the active game tab and ranking method
+  let leaderStat;
+  if (state.game === 'mini') {
+    leaderStat = leader.stats.miniAvg !== null
+      ? `Avg ${fmtScore(leader.stats.miniAvg, 'mini')} · ${leader.stats.miniCount} ${leader.stats.miniCount === 1 ? 'solve' : 'solves'}`
+      : 'No Mini scores yet';
+  } else if (state.game === 'maptap') {
+    leaderStat = leader.stats.mapAvg !== null
+      ? `Avg ${fmtScore(leader.stats.mapAvg, 'maptap')} · ${leader.stats.mapCount} ${leader.stats.mapCount === 1 ? 'score' : 'scores'}`
+      : 'No Maptap scores yet';
+  } else {
+    // All Games — use placement points (lower = better)
+    const points = computePlacementPoints();
+    const myPts = points[leader.player.id];
+    leaderStat = myPts && myPts.avg !== null
+      ? `${myPts.avg.toFixed(1)} avg points · ${leader.stats.count} games`
+      : `${leader.stats.count} games played`;
+  }
+
   return `
     <div class="hero-row">
       <div class="leader-card">
@@ -815,7 +834,7 @@ function renderDashboard() {
           ${avatarHTML(leader.player, 62, 'leader-av')}
           <div>
             <div class="leader-name">${escapeHtml(leader.player.name)}</div>
-            <div class="leader-stat">${leader.stats.winPct}% win rate · ${leader.stats.wins}W–${leader.stats.losses}L</div>
+            <div class="leader-stat">${leaderStat}</div>
           </div>
         </div>
       </div>
@@ -882,27 +901,44 @@ function renderRankRow(row, i, preview = false) {
   const { player: p, stats: s, streak: str } = row;
   const rankCls = i === 0 ? 'r1' : i === 1 ? 'r2' : i === 2 ? 'r3' : '';
   const rowCls = i === 0 ? 'rank-row first' : 'rank-row';
-  // Choose the meta line based on which game tab is active
-  let metaLine;
-  if (state.game === 'all') {
+
+  // Primary stat (big, on the right) and secondary stat (subtitle under name)
+  // depend on which game tab is active
+  let primary, primaryLabel, secondary;
+  if (state.game === 'mini') {
+    primary = s.miniAvg !== null ? fmtScore(s.miniAvg, 'mini') : '—';
+    primaryLabel = 'avg';
+    secondary = s.miniBest !== null
+      ? `Best ${fmtScore(s.miniBest, 'mini')} · ${s.miniCount} solves`
+      : `${s.count} games`;
+  } else if (state.game === 'maptap') {
+    primary = s.mapAvg !== null ? fmtScore(s.mapAvg, 'maptap') : '—';
+    primaryLabel = 'avg';
+    secondary = s.mapBest !== null
+      ? `Best ${fmtScore(s.mapBest, 'maptap')} · ${s.mapCount} scores`
+      : `${s.count} games`;
+  } else {
+    // All Games: show placement points as primary
+    const points = computePlacementPoints();
+    const pts = points[p.id];
+    primary = pts && pts.avg !== null ? pts.avg.toFixed(1) : '—';
+    primaryLabel = 'pts';
     const parts = [];
     if (s.miniBest !== null) parts.push(`Mini ${fmtScore(s.miniBest, 'mini')}`);
     if (s.mapBest !== null) parts.push(`Maptap ${fmtScore(s.mapBest, 'maptap')}`);
-    metaLine = parts.length ? `bests: ${parts.join(' · ')}` : `${s.count} scores`;
-  } else {
-    metaLine = `avg ${fmtScore(s.avg, state.game)} · best ${fmtScore(s.best, state.game)}`;
+    secondary = parts.length ? parts.join(' · ') : `${s.count} games`;
   }
+
   return `<div class="${rowCls}">
     <div class="rank-num ${rankCls}">${i + 1}</div>
     <div class="rank-player">
       ${avatarHTML(p, 36, 'rank-av')}
       <div class="rank-info">
         <div class="rank-name">${escapeHtml(p.name)}${str >= 2 ? `<span class="streak-tag">${str} streak</span>` : ''}</div>
-        <div class="rank-meta">${metaLine}</div>
+        <div class="rank-meta">${secondary}</div>
       </div>
     </div>
-    <div class="rank-pct">${s.winPct}<span class="pct-sym">%</span></div>
-    <div class="rank-record">${s.wins}–${s.losses}</div>
+    <div class="rank-pct">${primary}<span class="pct-sym"> ${primaryLabel}</span></div>
   </div>`;
 }
 
