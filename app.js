@@ -282,15 +282,21 @@ function playerStats(pid) {
   if (!ps.length) return null;
   const isMini = state.game !== 'maptap';
   const vals = ps.map(s => s.score);
+
+  // Head-to-head: only compare same-game scores on the same day.
+  // Bugs avoided: (1) cross-game comparisons (Mini vs Maptap) and
+  // (2) only counting first score per day when a player has multiple games on that date.
   let wins = 0, losses = 0, ties = 0;
-  const myDates = [...new Set(ps.map(s => s.played_on))];
-  myDates.forEach(date => {
-    const mine = ps.find(s => s.played_on === date);
-    const others = filteredScores().filter(s => s.player_id !== pid && s.played_on === date);
-    if (!mine || !others.length) return;
+  ps.forEach(mine => {
+    const others = filteredScores().filter(s =>
+      s.player_id !== pid &&
+      s.played_on === mine.played_on &&
+      s.game === mine.game
+    );
     others.forEach(o => {
+      const myGameIsMini = mine.game === 'mini';
       if (mine.score === o.score) ties++;
-      else if (isMini ? mine.score < o.score : mine.score > o.score) wins++;
+      else if (myGameIsMini ? mine.score < o.score : mine.score > o.score) wins++;
       else losses++;
     });
   });
@@ -318,15 +324,32 @@ function playerStats(pid) {
 }
 
 function streak(pid) {
-  const isMini = state.game !== 'maptap';
+  // A "win day" is a day where the player won every shared comparison
+  // (same game, same day, against any other player).
   const dates = [...new Set(filteredScores().map(s => s.played_on))].sort((a, b) => b.localeCompare(a));
   let n = 0;
   for (const date of dates) {
-    const mine = filteredScores().find(s => s.player_id === pid && s.played_on === date);
-    const others = filteredScores().filter(s => s.player_id !== pid && s.played_on === date);
-    if (!mine || !others.length) { if (n > 0) break; continue; }
-    const won = others.every(o => isMini ? mine.score < o.score : mine.score > o.score);
-    if (won) n++; else if (n > 0) break;
+    const myScores = filteredScores().filter(s => s.player_id === pid && s.played_on === date);
+    if (!myScores.length) { if (n > 0) break; continue; }
+    // Did I have at least one head-to-head matchup, and did I win every one?
+    let hadMatchup = false;
+    let wonAll = true;
+    for (const mine of myScores) {
+      const others = filteredScores().filter(s =>
+        s.player_id !== pid &&
+        s.played_on === date &&
+        s.game === mine.game
+      );
+      for (const o of others) {
+        hadMatchup = true;
+        const myGameIsMini = mine.game === 'mini';
+        const won = myGameIsMini ? mine.score < o.score : mine.score > o.score;
+        if (!won) { wonAll = false; break; }
+      }
+      if (!wonAll) break;
+    }
+    if (!hadMatchup) { if (n > 0) break; continue; }
+    if (wonAll) n++; else if (n > 0) break;
   }
   return n;
 }
@@ -491,15 +514,29 @@ function activeStreakLeader() {
 }
 
 function streakStartDate(pid) {
-  const isMini = state.game !== 'maptap';
   const dates = [...new Set(filteredScores().map(s => s.played_on))].sort((a, b) => b.localeCompare(a));
   let lastWinDate = null;
   for (const date of dates) {
-    const mine = filteredScores().find(s => s.player_id === pid && s.played_on === date);
-    const others = filteredScores().filter(s => s.player_id !== pid && s.played_on === date);
-    if (!mine || !others.length) continue;
-    const won = others.every(o => isMini ? mine.score < o.score : mine.score > o.score);
-    if (won) lastWinDate = date;
+    const myScores = filteredScores().filter(s => s.player_id === pid && s.played_on === date);
+    if (!myScores.length) continue;
+    let hadMatchup = false;
+    let wonAll = true;
+    for (const mine of myScores) {
+      const others = filteredScores().filter(s =>
+        s.player_id !== pid &&
+        s.played_on === date &&
+        s.game === mine.game
+      );
+      for (const o of others) {
+        hadMatchup = true;
+        const myGameIsMini = mine.game === 'mini';
+        const won = myGameIsMini ? mine.score < o.score : mine.score > o.score;
+        if (!won) { wonAll = false; break; }
+      }
+      if (!wonAll) break;
+    }
+    if (!hadMatchup) continue;
+    if (wonAll) lastWinDate = date;
     else break;
   }
   return lastWinDate;
