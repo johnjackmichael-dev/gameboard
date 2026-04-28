@@ -731,6 +731,137 @@ main{
 .bar-fill{height:100%;border-radius:100px;transition:width .6s var(--ease)}
 .bar-val{font-size:11.5px;color:var(--ink-3);text-align:right;font-variant-numeric:tabular-nums;font-weight:500}
 
+/* ═══════════════ WAITING BANNER ═══════════════ */
+.waiting-banner{
+  display:flex;align-items:center;gap:12px;
+  background:linear-gradient(135deg, var(--gold-bg-strong), var(--gold-bg));
+  border:1px solid rgba(212, 169, 69, 0.25);
+  border-radius:var(--r-md);
+  padding:11px 14px;
+  margin-bottom:14px;
+}
+.waiting-icon{
+  font-size:18px;
+  line-height:1;
+}
+.waiting-text{
+  font-size:13px;
+  color:var(--ink-2);
+  font-weight:500;
+}
+
+/* ═══════════════ DAILY RESULTS ═══════════════ */
+.daily-game-card{
+  background:var(--paper);
+  border:1px solid var(--line);
+  border-radius:var(--r-lg);
+  padding:14px 0 4px;
+  margin-bottom:14px;
+  overflow:hidden;
+}
+.daily-game-title{
+  font-family:var(--mono);font-size:10px;
+  letter-spacing:0.14em;text-transform:uppercase;
+  color:var(--ink-4);font-weight:600;
+  padding:0 18px 10px;
+  border-bottom:1px solid var(--line-hairline);
+  margin-bottom:0;
+}
+.daily-scroll{
+  overflow-x:auto;
+  -webkit-overflow-scrolling:touch;
+  scroll-behavior:smooth;
+}
+.daily-table{
+  border-collapse:separate;
+  border-spacing:0;
+  width:100%;
+  font-variant-numeric:tabular-nums;
+}
+.daily-table th,
+.daily-table td{
+  padding:10px 12px;
+  font-size:12.5px;
+  border-bottom:1px solid var(--line-hairline);
+  white-space:nowrap;
+  text-align:center;
+}
+.daily-table tbody tr:last-child td{border-bottom:none}
+.daily-table th{
+  font-family:var(--mono);
+  font-size:10px;
+  letter-spacing:0.08em;
+  text-transform:uppercase;
+  color:var(--ink-4);
+  font-weight:600;
+  background:var(--bg);
+  position:sticky;top:0;
+}
+.daily-name-col{
+  position:sticky;left:0;z-index:2;
+  background:var(--paper);
+  text-align:left !important;
+  min-width:140px;
+  border-right:1px solid var(--line-hairline);
+}
+.daily-name-inner{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+thead .daily-name-col{
+  background:var(--bg);
+}
+.daily-name-text{
+  font-weight:600;
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:13px;
+  letter-spacing:-0.005em;
+}
+.daily-date-col{
+  min-width:72px;
+}
+.daily-cell{
+  font-weight:500;
+  color:var(--ink-2);
+  position:relative;
+}
+.daily-cell.daily-winner{
+  background:var(--gold-bg);
+  color:var(--gold-deep);
+  font-weight:600;
+}
+.daily-cell.daily-winner::after{
+  content:'★';
+  position:absolute;
+  top:2px;right:4px;
+  font-size:8px;
+  color:var(--gold-deep);
+}
+.daily-cell.daily-loser{
+  color:var(--ink-4);
+}
+.daily-cell.daily-tie{
+  background:rgba(100, 116, 139, 0.08);
+  color:var(--ink-3);
+  font-style:italic;
+}
+.daily-cell.daily-no-contest{
+  color:var(--ink-4);
+  font-style:italic;
+  opacity:0.7;
+}
+.daily-cell.daily-empty{
+  color:var(--ink-5);
+  background:transparent;
+}
+.daily-email-tag{
+  font-size:8px;
+  margin-left:3px;
+  opacity:0.55;
+}
+
 /* ═══════════════ LEADERBOARD MODE TOGGLE ═══════════════ */
 .lb-mode-toggle{
   display:flex;gap:6px;
