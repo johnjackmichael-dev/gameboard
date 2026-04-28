@@ -185,7 +185,23 @@ function compressImage(dataUrl, callback) {
 // ═══════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════
-const todayStr = () => new Date().toISOString().split('T')[0];
+const todayStr = () => {
+  // Use the user's local timezone, formatted as YYYY-MM-DD
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const yesterdayStr = () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
 
 function fmtScore(val, game) {
   if (val === null || val === undefined) return '—';
@@ -197,7 +213,7 @@ function fmtScore(val, game) {
 function fmtDate(str) {
   if (!str) return '—';
   if (str === todayStr()) return 'Today';
-  const yest = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  const yest = yesterdayStr();
   if (str === yest) return 'Yesterday';
   const d = new Date(str + 'T12:00:00');
   const today = new Date();
@@ -208,7 +224,7 @@ function fmtDate(str) {
 function relDate(str) {
   if (!str) return '';
   if (str === todayStr()) return 'today';
-  const yest = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  const yest = yesterdayStr();
   if (str === yest) return 'yesterday';
   const d = new Date(str + 'T12:00:00');
   const days = Math.floor((Date.now() - d.getTime()) / 86400000);
@@ -340,19 +356,65 @@ function ranked() {
       return bx - ax;
     });
   }
-  // All Games: sort by combined placement points (lower is better — like golf)
-  // For each day in each game, players are ranked. 1st = 1pt, 2nd = 2pt, etc.
-  // Sum across all days. Players with no scores go last.
+
+  // All Games: rank by average placement on shared days (2+ players).
+  // If players never share a day, fall back to comparing their per-game averages.
   const points = computePlacementPoints();
   return rows.sort((a, b) => {
     const ap = points[a.player.id];
     const bp = points[b.player.id];
-    if (ap == null && bp == null) return 0;
-    if (ap == null) return 1;
-    if (bp == null) return -1;
-    // Average points per scored game, so frequent players aren't penalized
-    return ap.avg - bp.avg;
+    const aHas = ap && ap.count > 0;
+    const bHas = bp && bp.count > 0;
+
+    // Both have shared-day data: compare placement averages (lower = better)
+    if (aHas && bHas) return ap.avg - bp.avg;
+
+    // Only one has shared-day data: that one is ranked higher
+    if (aHas && !bHas) return -1;
+    if (!aHas && bHas) return 1;
+
+    // Neither has shared days — compare overall performance.
+    // Score them by normalized "rank position" across both games' averages.
+    const aScore = soloPerformanceScore(a, rows);
+    const bScore = soloPerformanceScore(b, rows);
+    return aScore - bScore; // lower is better
   });
+}
+
+// When two players have no shared days, compare their performance more loosely:
+// rank them across each game by avg, and average those ranks.
+function soloPerformanceScore(row, allRows) {
+  const ranks = [];
+  // Mini: lower avg is better
+  const miniHas = allRows.filter(r => r.stats.miniAvg !== null);
+  if (row.stats.miniAvg !== null) {
+    miniHas.sort((a, b) => a.stats.miniAvg - b.stats.miniAvg);
+    ranks.push(miniHas.findIndex(r => r.player.id === row.player.id) + 1);
+  }
+  // Maptap: higher avg is better
+  const mapHas = allRows.filter(r => r.stats.mapAvg !== null);
+  if (row.stats.mapAvg !== null) {
+    mapHas.sort((a, b) => b.stats.mapAvg - a.stats.mapAvg);
+    ranks.push(mapHas.findIndex(r => r.player.id === row.player.id) + 1);
+  }
+  if (!ranks.length) return 999; // dead last
+  return ranks.reduce((a, b) => a + b, 0) / ranks.length;
+}
+
+// How many days has a player shared with at least one other player on a given game?
+function countSharedDays(pid, game) {
+  if (game === 'all') {
+    return countSharedDays(pid, 'mini') + countSharedDays(pid, 'maptap');
+  }
+  const myDates = state.scores
+    .filter(s => s.player_id === pid && s.game === game)
+    .map(s => s.played_on);
+  let count = 0;
+  myDates.forEach(date => {
+    const others = state.scores.filter(s => s.player_id !== pid && s.game === game && s.played_on === date);
+    if (others.length > 0) count++;
+  });
+  return count;
 }
 
 // Compute placement points across all days and both games.
@@ -366,6 +428,8 @@ function computePlacementPoints() {
     const isMini = game === 'mini';
     dates.forEach(date => {
       const dayScores = state.scores.filter(s => s.game === game && s.played_on === date);
+      // Skip days where only one person played — placement is meaningless solo
+      if (dayScores.length < 2) return;
       // Sort: lower is better for Mini, higher is better for Maptap
       dayScores.sort((a, b) => isMini ? a.score - b.score : b.score - a.score);
       // Award placement: 1st = 1pt, 2nd = 2pt, ties get the same rank
@@ -780,18 +844,18 @@ function renderDashboard() {
     const todayBest = todayBestFor('mini');
     const avg = averageFor('mini');
     statCards = `
-      ${statCard('Best Mini Time', overallBest ? fmtScore(overallBest.score, 'mini') : '—', overallBest?.player?.name, overallBest ? fmtDate(overallBest.played_on) : '', 'blue')}
-      ${statCard('Worst Mini Time', overallWorst ? fmtScore(overallWorst.score, 'mini') : '—', overallWorst?.player?.name, overallWorst ? fmtDate(overallWorst.played_on) : '', 'red')}
-      ${statCard("Today's Best", todayBest ? fmtScore(todayBest.score, 'mini') : '—', todayBest?.player?.name || 'No solves yet', '', '')}
+      ${statCard('Best Mini Time', overallBest ? fmtScore(overallBest.score, 'mini') : '—', overallBest?.player?.name, overallBest ? fmtDate(overallBest.played_on) : '', 'blue', overallBest?.source)}
+      ${statCard('Worst Mini Time', overallWorst ? fmtScore(overallWorst.score, 'mini') : '—', overallWorst?.player?.name, overallWorst ? fmtDate(overallWorst.played_on) : '', 'red', overallWorst?.source)}
+      ${statCard("Today's Best", todayBest ? fmtScore(todayBest.score, 'mini') : '—', todayBest?.player?.name || 'No solves yet', '', '', todayBest?.source)}
       ${statCard('Average', avg !== null ? fmtScore(avg, 'mini') : '—', 'across all solves', '', '')}
     `;
   } else if (state.game === 'maptap') {
     const todayBest = todayBestFor('maptap');
     const avg = averageFor('maptap');
     statCards = `
-      ${statCard('Best Maptap', overallBest ? fmtScore(overallBest.score, 'maptap') : '—', overallBest?.player?.name, overallBest ? fmtDate(overallBest.played_on) : '', 'gold')}
-      ${statCard('Worst Maptap', overallWorst ? fmtScore(overallWorst.score, 'maptap') : '—', overallWorst?.player?.name, overallWorst ? fmtDate(overallWorst.played_on) : '', 'red')}
-      ${statCard("Today's Best", todayBest ? fmtScore(todayBest.score, 'maptap') : '—', todayBest?.player?.name || 'No scores yet', '', '')}
+      ${statCard('Best Maptap', overallBest ? fmtScore(overallBest.score, 'maptap') : '—', overallBest?.player?.name, overallBest ? fmtDate(overallBest.played_on) : '', 'gold', overallBest?.source)}
+      ${statCard('Worst Maptap', overallWorst ? fmtScore(overallWorst.score, 'maptap') : '—', overallWorst?.player?.name, overallWorst ? fmtDate(overallWorst.played_on) : '', 'red', overallWorst?.source)}
+      ${statCard("Today's Best", todayBest ? fmtScore(todayBest.score, 'maptap') : '—', todayBest?.player?.name || 'No scores yet', '', '', todayBest?.source)}
       ${statCard('Average', avg !== null ? fmtScore(avg, 'maptap') : '—', 'across all scores', '', '')}
     `;
   } else {
@@ -800,10 +864,10 @@ function renderDashboard() {
     const bestMap = findExtreme('maptap', 'best');
     const worstMap = findExtreme('maptap', 'worst');
     statCards = `
-      ${statCard('Best Mini Time', bestMini ? fmtScore(bestMini.score, 'mini') : '—', bestMini?.player?.name, bestMini ? fmtDate(bestMini.played_on) : '', 'blue')}
-      ${statCard('Worst Mini Time', worstMini ? fmtScore(worstMini.score, 'mini') : '—', worstMini?.player?.name, worstMini ? fmtDate(worstMini.played_on) : '', 'red')}
-      ${statCard('Best Maptap', bestMap ? fmtScore(bestMap.score, 'maptap') : '—', bestMap?.player?.name, bestMap ? fmtDate(bestMap.played_on) : '', 'gold')}
-      ${statCard('Worst Maptap', worstMap ? fmtScore(worstMap.score, 'maptap') : '—', worstMap?.player?.name, worstMap ? fmtDate(worstMap.played_on) : '', 'red')}
+      ${statCard('Best Mini Time', bestMini ? fmtScore(bestMini.score, 'mini') : '—', bestMini?.player?.name, bestMini ? fmtDate(bestMini.played_on) : '', 'blue', bestMini?.source)}
+      ${statCard('Worst Mini Time', worstMini ? fmtScore(worstMini.score, 'mini') : '—', worstMini?.player?.name, worstMini ? fmtDate(worstMini.played_on) : '', 'red', worstMini?.source)}
+      ${statCard('Best Maptap', bestMap ? fmtScore(bestMap.score, 'maptap') : '—', bestMap?.player?.name, bestMap ? fmtDate(bestMap.played_on) : '', 'gold', bestMap?.source)}
+      ${statCard('Worst Maptap', worstMap ? fmtScore(worstMap.score, 'maptap') : '—', worstMap?.player?.name, worstMap ? fmtDate(worstMap.played_on) : '', 'red', worstMap?.source)}
     `;
   }
 
@@ -821,9 +885,15 @@ function renderDashboard() {
     // All Games — use placement points (lower = better)
     const points = computePlacementPoints();
     const myPts = points[leader.player.id];
-    leaderStat = myPts && myPts.avg !== null
-      ? `${myPts.avg.toFixed(1)} avg points · ${leader.stats.count} games`
-      : `${leader.stats.count} games played`;
+    if (myPts && myPts.avg !== null && myPts.count >= 1) {
+      leaderStat = `${myPts.avg.toFixed(1)} avg pts · ${myPts.count} shared ${myPts.count === 1 ? 'day' : 'days'}`;
+    } else {
+      // No shared-day data yet — describe their solo performance
+      const parts = [];
+      if (leader.stats.miniAvg !== null) parts.push(`Mini avg ${fmtScore(leader.stats.miniAvg, 'mini')}`);
+      if (leader.stats.mapAvg !== null) parts.push(`Maptap avg ${fmtScore(leader.stats.mapAvg, 'maptap')}`);
+      leaderStat = parts.length ? parts.join(' · ') : `${leader.stats.count} games played`;
+    }
   }
 
   return `
@@ -886,12 +956,14 @@ function renderDashboard() {
   `;
 }
 
-function statCard(label, num, who, when, colorCls) {
+function statCard(label, num, who, when, colorCls, source) {
+  // Show a small email icon if the score came in via the email path
+  const sourceIcon = source === 'email' ? ' <span title="Logged via email" style="font-size:10px;opacity:0.7">✉</span>' : '';
   return `<div class="stat-card">
     <div class="stat-label">${label}</div>
     <div class="stat-num ${colorCls}">${num}</div>
     <div class="stat-meta">
-      <span class="stat-who">${who || ''}</span>
+      <span class="stat-who">${who || ''}${sourceIcon}</span>
       <span class="stat-when">${when || ''}</span>
     </div>
   </div>`;
@@ -918,11 +990,25 @@ function renderRankRow(row, i, preview = false) {
       ? `Best ${fmtScore(s.mapBest, 'maptap')} · ${s.mapCount} scores`
       : `${s.count} games`;
   } else {
-    // All Games: show placement points as primary
+    // All Games: show placement points as primary, or "—" if no shared days yet
     const points = computePlacementPoints();
     const pts = points[p.id];
-    primary = pts && pts.avg !== null ? pts.avg.toFixed(1) : '—';
-    primaryLabel = 'pts';
+    if (pts && pts.avg !== null && pts.count > 0) {
+      primary = pts.avg.toFixed(1);
+      primaryLabel = 'pts';
+    } else {
+      // No shared-day data yet — show something useful instead of "—"
+      if (s.miniAvg !== null) {
+        primary = fmtScore(s.miniAvg, 'mini');
+        primaryLabel = 'Mini avg';
+      } else if (s.mapAvg !== null) {
+        primary = fmtScore(s.mapAvg, 'maptap');
+        primaryLabel = 'Maptap avg';
+      } else {
+        primary = '—';
+        primaryLabel = '';
+      }
+    }
     const parts = [];
     if (s.miniBest !== null) parts.push(`Mini ${fmtScore(s.miniBest, 'mini')}`);
     if (s.mapBest !== null) parts.push(`Maptap ${fmtScore(s.mapBest, 'maptap')}`);
@@ -997,29 +1083,35 @@ function renderLeaderboard() {
         <span style="text-align:center">#</span>
         <span>Player</span>
         ${isAll
-          ? `<span class="right">Pts</span><span class="right">Avg Mini</span><span class="right">Avg Maptap</span><span class="right">W–L</span>`
-          : `<span class="right">Avg</span><span class="right">Best</span><span class="right">Scores</span><span class="right">W–L</span>`}
+          ? `<span class="right">Pts</span><span class="right">Avg Mini</span><span class="right">Avg Maptap</span><span class="right">Days</span>`
+          : `<span class="right">Avg</span><span class="right">Best</span><span class="right">Scores</span><span class="right">Days</span>`}
       </div>
       ${r.map((row, i) => {
         const { player: p, stats: s, streak: str } = row;
         const rankCls = i === 0 ? 'r1' : i === 1 ? 'r2' : i === 2 ? 'r3' : '';
         const rowCls = i === 0 ? 'lb-row-full first' : 'lb-row-full';
+        const ptsForP = points && points[p.id];
         const cols = isAll
-          ? `<div class="rank-stat primary">${points[p.id] && points[p.id].avg !== null ? points[p.id].avg.toFixed(1) : '—'}</div>
+          ? `<div class="rank-stat primary">${ptsForP && ptsForP.avg !== null ? ptsForP.avg.toFixed(1) : '—'}</div>
              <div class="rank-stat muted">${s.miniAvg !== null ? fmtScore(s.miniAvg, 'mini') : '—'}</div>
              <div class="rank-stat muted">${s.mapAvg !== null ? fmtScore(s.mapAvg, 'maptap') : '—'}</div>
-             <div class="rank-stat">${s.wins}–${s.losses}</div>`
-          : `<div class="rank-stat primary">${fmtScore(s.avg, state.game)}</div>
-             <div class="rank-stat" style="color:var(--gold-deep);font-weight:600">${fmtScore(s.best, state.game)}</div>
+             <div class="rank-stat">${ptsForP ? ptsForP.count : 0}</div>`
+          : `<div class="rank-stat primary">${s.avg !== null ? fmtScore(s.avg, state.game) : '—'}</div>
+             <div class="rank-stat" style="color:var(--gold-deep);font-weight:600">${s.best !== null ? fmtScore(s.best, state.game) : '—'}</div>
              <div class="rank-stat muted">${s.count}</div>
-             <div class="rank-stat">${s.wins}–${s.losses}</div>`;
+             <div class="rank-stat">${countSharedDays(p.id, state.game)}</div>`;
+        const subtitleParts = [];
+        if (str >= 2) subtitleParts.push(`${str} streak`);
+        const subtitle = isAll
+          ? (ptsForP && ptsForP.count > 0 ? `${ptsForP.count} shared ${ptsForP.count === 1 ? 'day' : 'days'}` : 'no shared days yet')
+          : `${s.count} ${s.count === 1 ? 'score' : 'scores'} logged`;
         return `<div class="${rowCls}${isAll ? ' lb-row-all' : ''}">
           <div class="rank-num ${rankCls}">${i + 1}</div>
           <div class="rank-player">
             ${avatarHTML(p, 36, 'rank-av')}
             <div class="rank-info">
               <div class="rank-name">${escapeHtml(p.name)}${str >= 2 ? `<span class="streak-tag">${str} streak</span>` : ''}</div>
-              <div class="rank-meta">${s.winPct}% win rate</div>
+              <div class="rank-meta">${subtitle}</div>
             </div>
           </div>
           ${cols}
