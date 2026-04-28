@@ -1096,7 +1096,7 @@ function renderDashboard() {
 
   return `
     ${renderWaitingBanner()}
-    <div class="hero-row">
+    <div class="hero-row${state.game === 'all' ? ' hero-row-solo' : ''}">
       <div class="leader-card">
         <div class="leader-eyebrow">Currently leading</div>
         <div class="leader-row">
@@ -1107,7 +1107,7 @@ function renderDashboard() {
           </div>
         </div>
       </div>
-      ${sLead.streak >= 2 ? `
+      ${state.game === 'all' ? '' : (sLead.streak >= 2 ? `
         <div class="streak-card">
           <div class="streak-circle"><span class="streak-num">${sLead.streak}</span></div>
           <div class="streak-info">
@@ -1125,7 +1125,7 @@ function renderDashboard() {
             <div class="streak-since">2+ wins in a row to start one</div>
           </div>
         </div>
-      `}
+      `)}
     </div>
 
     ${renderTodaySection()}
