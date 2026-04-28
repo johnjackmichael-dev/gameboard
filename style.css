@@ -641,7 +641,7 @@ main{
 }
 .rank-row{
   display:grid;
-  grid-template-columns:32px 1fr auto auto;
+  grid-template-columns:32px 1fr auto;
   gap:14px;align-items:center;
   padding:14px 18px;
   border-bottom:1px solid var(--line-hairline);
