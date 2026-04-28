@@ -1049,7 +1049,6 @@ function renderRankRow(row, i, preview = false) {
         primaryLabel = '';
       }
     }
-    }
     const parts = [];
     if (s.miniBest !== null) parts.push(`Mini ${fmtScore(s.miniBest, 'mini')}`);
     if (s.mapBest !== null) parts.push(`Maptap ${fmtScore(s.mapBest, 'maptap')}`);
