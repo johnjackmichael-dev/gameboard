@@ -513,6 +513,40 @@ function activeStreakLeader() {
   return best;
 }
 
+// "Waiting on" banner — shows when at least one player has logged a score
+// today and at least one other player hasn't. Helps make "no contest" days
+// feel less ambiguous.
+function renderWaitingBanner() {
+  if (state.players.length < 2) return '';
+  const today = todayStr();
+  const games = state.game === 'all' ? ['mini', 'maptap'] : [state.game];
+
+  // For each game, who played today and who didn't?
+  const waitingMessages = [];
+  games.forEach(game => {
+    const todayScores = state.scores.filter(s => s.played_on === today && s.game === game);
+    if (!todayScores.length) return; // nobody played, nothing to wait for
+    const playedIds = new Set(todayScores.map(s => s.player_id));
+    const missing = state.players.filter(p => !playedIds.has(p.id));
+    if (!missing.length) return; // everyone played, no waiting needed
+    if (missing.length === state.players.length) return; // shouldn't happen but safety
+    const gameLabel = game === 'mini' ? 'Mini' : 'Maptap';
+    if (missing.length === 1) {
+      waitingMessages.push(`${gameLabel}: waiting on ${escapeHtml(missing[0].name)}`);
+    } else {
+      waitingMessages.push(`${gameLabel}: waiting on ${missing.length} more`);
+    }
+  });
+
+  if (!waitingMessages.length) return '';
+  return `
+    <div class="waiting-banner">
+      <div class="waiting-icon">⏳</div>
+      <div class="waiting-text">${waitingMessages.join(' · ')}</div>
+    </div>
+  `;
+}
+
 function streakStartDate(pid) {
   const dates = [...new Set(filteredScores().map(s => s.played_on))].sort((a, b) => b.localeCompare(a));
   let lastWinDate = null;
@@ -959,6 +993,7 @@ function renderDashboard() {
   }
 
   return `
+    ${renderWaitingBanner()}
     <div class="hero-row">
       <div class="leader-card">
         <div class="leader-eyebrow">Currently leading</div>
@@ -1222,7 +1257,109 @@ function renderLeaderboard() {
         </div>`;
       }).join('')}
     </div>
+
+    ${renderDailyResultsSection()}
   `;
+}
+
+// ═══════════════════════════════════════════════
+// DAILY RESULTS SCROLL VIEW
+// ═══════════════════════════════════════════════
+function renderDailyResultsSection() {
+  // Decide which game(s) to show based on the active filter
+  const games = state.game === 'all' ? ['mini', 'maptap'] : [state.game];
+  const sections = games.map(g => renderDailyResultsForGame(g)).filter(Boolean);
+  if (!sections.length) return '';
+  return `
+    <div class="section-head" style="margin-top:32px">
+      <div class="section-title">Daily results</div>
+      <span class="section-title" style="color:var(--ink-4)">Scroll →</span>
+    </div>
+    ${sections.join('')}
+  `;
+}
+
+function renderDailyResultsForGame(game) {
+  // Collect all dates that have at least one score in this game, newest first
+  const gameScores = state.scores.filter(s => s.game === game);
+  if (!gameScores.length) return '';
+  const dates = [...new Set(gameScores.map(s => s.played_on))].sort((a, b) => b.localeCompare(a));
+
+  // Players who have ever logged this game (so we don't show empty rows for non-players)
+  const playerIds = [...new Set(gameScores.map(s => s.player_id))];
+  const players = state.players.filter(p => playerIds.includes(p.id));
+  if (!players.length) return '';
+
+  const isMini = game === 'mini';
+  const gameLabel = isMini ? 'NYT Mini' : 'Maptap';
+
+  // For each date, figure out who won (or if it was a no-contest)
+  const dayWinners = {}; // date -> winner player_id (or 'tie' or null)
+  dates.forEach(date => {
+    const dayScores = gameScores.filter(s => s.played_on === date);
+    if (dayScores.length < 2) {
+      dayWinners[date] = null; // no contest
+      return;
+    }
+    const sorted = [...dayScores].sort((a, b) => isMini ? a.score - b.score : b.score - a.score);
+    if (sorted[0].score === sorted[1].score) {
+      dayWinners[date] = 'tie';
+    } else {
+      dayWinners[date] = sorted[0].player_id;
+    }
+  });
+
+  return `
+    <div class="daily-game-card">
+      <div class="daily-game-title">${gameLabel}</div>
+      <div class="daily-scroll">
+        <table class="daily-table">
+          <thead>
+            <tr>
+              <th class="daily-name-col">Player</th>
+              ${dates.map(d => `<th class="daily-date-col">${fmtDateShort(d)}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${players.map(p => `
+              <tr>
+                <td class="daily-name-col">
+                  <div class="daily-name-inner">
+                    ${avatarHTML(p, 24, 'rank-av')}
+                    <span class="daily-name-text">${escapeHtml(p.name)}</span>
+                  </div>
+                </td>
+                ${dates.map(d => {
+                  const score = gameScores.find(s => s.player_id === p.id && s.played_on === d);
+                  const winner = dayWinners[d];
+                  const dayScores = gameScores.filter(s => s.played_on === d);
+                  const noContest = dayScores.length < 2;
+                  if (!score) {
+                    return `<td class="daily-cell daily-empty" title="No score">—</td>`;
+                  }
+                  let cls = 'daily-cell';
+                  if (noContest) cls += ' daily-no-contest';
+                  else if (winner === 'tie') cls += ' daily-tie';
+                  else if (winner === p.id) cls += ' daily-winner';
+                  else cls += ' daily-loser';
+                  const tooltip = noContest ? 'No contest (only player)' : (winner === 'tie' ? 'Tied' : winner === p.id ? 'Winner' : 'Lost');
+                  return `<td class="${cls}" title="${tooltip}">${fmtScore(score.score, game)}${score.source === 'email' ? '<span class="daily-email-tag">✉</span>' : ''}</td>`;
+                }).join('')}
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// Short date format for column headers: "Today", "Yest", "Apr 26", etc.
+function fmtDateShort(str) {
+  if (str === todayStr()) return 'Today';
+  if (str === yesterdayStr()) return 'Yest';
+  const d = new Date(str + 'T12:00:00');
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 // ═══════════════════════════════════════════════
