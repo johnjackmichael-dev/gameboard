@@ -501,6 +501,9 @@ main{
   gap:14px;
   margin-bottom:14px;
 }
+.hero-row.hero-row-solo{
+  grid-template-columns:1fr;
+}
 
 .leader-card{
   background:linear-gradient(135deg,var(--royal-deep) 0%,var(--royal) 100%);
