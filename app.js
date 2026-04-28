@@ -357,27 +357,33 @@ function ranked() {
     });
   }
 
-  // All Games: rank by average placement on shared days (2+ players).
-  // If players never share a day, fall back to comparing their per-game averages.
+  // All Games — choose method based on active player count.
+  // 2 players: head-to-head (intuitive for a duel).
+  // 3+ players: placement points (1st=3, 2nd=2, 3rd=1; higher = better).
+  if (rows.length <= 2) {
+    // H2H ranking — sort by win percentage on shared days
+    return rows.sort((a, b) => {
+      // Win % tiebreaks: more total games played, then alphabetical
+      if (b.stats.winPct !== a.stats.winPct) return b.stats.winPct - a.stats.winPct;
+      if (b.stats.wins !== a.stats.wins) return b.stats.wins - a.stats.wins;
+      return a.player.name.localeCompare(b.player.name);
+    });
+  }
+
+  // 3+ players: use placement points (higher = better)
   const points = computePlacementPoints();
   return rows.sort((a, b) => {
     const ap = points[a.player.id];
     const bp = points[b.player.id];
     const aHas = ap && ap.count > 0;
     const bHas = bp && bp.count > 0;
-
-    // Both have shared-day data: compare placement averages (lower = better)
-    if (aHas && bHas) return ap.avg - bp.avg;
-
-    // Only one has shared-day data: that one is ranked higher
+    if (aHas && bHas) return bp.avg - ap.avg; // higher avg pts = better
     if (aHas && !bHas) return -1;
     if (!aHas && bHas) return 1;
-
-    // Neither has shared days — compare overall performance.
-    // Score them by normalized "rank position" across both games' averages.
+    // Neither has shared days — fall back to per-game averages
     const aScore = soloPerformanceScore(a, rows);
     const bScore = soloPerformanceScore(b, rows);
-    return aScore - bScore; // lower is better
+    return aScore - bScore; // lower rank-position = better
   });
 }
 
@@ -432,16 +438,18 @@ function computePlacementPoints() {
       if (dayScores.length < 2) return;
       // Sort: lower is better for Mini, higher is better for Maptap
       dayScores.sort((a, b) => isMini ? a.score - b.score : b.score - a.score);
-      // Award placement: 1st = 1pt, 2nd = 2pt, ties get the same rank
-      let prevScore = null, prevRank = 0;
+      // Award points: 1st = 3, 2nd = 2, 3rd = 1, 4th+ = 0. Ties share the higher value.
+      let prevScore = null, prevPts = 0;
       dayScores.forEach((s, i) => {
-        const rank = (s.score === prevScore) ? prevRank : (i + 1);
+        const placement = i + 1;
+        const basePts = Math.max(0, 4 - placement); // 3, 2, 1, 0, 0...
+        const pts = (s.score === prevScore) ? prevPts : basePts;
         if (result[s.player_id]) {
-          result[s.player_id].total += rank;
+          result[s.player_id].total += pts;
           result[s.player_id].count += 1;
         }
         prevScore = s.score;
-        prevRank = rank;
+        prevPts = pts;
       });
     });
   });
@@ -453,6 +461,11 @@ function computePlacementPoints() {
     }
   });
   return result;
+}
+
+// True when the All Games leaderboard should use head-to-head instead of placement points
+function useH2HMode() {
+  return state.players.length <= 2;
 }
 
 // Find best/worst across all scores in a game
@@ -882,17 +895,29 @@ function renderDashboard() {
       ? `Avg ${fmtScore(leader.stats.mapAvg, 'maptap')} · ${leader.stats.mapCount} ${leader.stats.mapCount === 1 ? 'score' : 'scores'}`
       : 'No Maptap scores yet';
   } else {
-    // All Games — use placement points (lower = better)
-    const points = computePlacementPoints();
-    const myPts = points[leader.player.id];
-    if (myPts && myPts.avg !== null && myPts.count >= 1) {
-      leaderStat = `${myPts.avg.toFixed(1)} avg pts · ${myPts.count} shared ${myPts.count === 1 ? 'day' : 'days'}`;
+    // All Games — H2H mode for 2 players, points for 3+
+    if (useH2HMode()) {
+      if (leader.stats.wins + leader.stats.losses + leader.stats.ties > 0) {
+        leaderStat = `${leader.stats.winPct}% win rate · ${leader.stats.wins}W–${leader.stats.losses}L${leader.stats.ties ? `–${leader.stats.ties}T` : ''}`;
+      } else {
+        // No shared-day data — show solo summary
+        const parts = [];
+        if (leader.stats.miniAvg !== null) parts.push(`Mini avg ${fmtScore(leader.stats.miniAvg, 'mini')}`);
+        if (leader.stats.mapAvg !== null) parts.push(`Maptap avg ${fmtScore(leader.stats.mapAvg, 'maptap')}`);
+        leaderStat = parts.length ? parts.join(' · ') : `${leader.stats.count} games played`;
+      }
     } else {
-      // No shared-day data yet — describe their solo performance
-      const parts = [];
-      if (leader.stats.miniAvg !== null) parts.push(`Mini avg ${fmtScore(leader.stats.miniAvg, 'mini')}`);
-      if (leader.stats.mapAvg !== null) parts.push(`Maptap avg ${fmtScore(leader.stats.mapAvg, 'maptap')}`);
-      leaderStat = parts.length ? parts.join(' · ') : `${leader.stats.count} games played`;
+      // 3+ players: placement points (higher = better)
+      const points = computePlacementPoints();
+      const myPts = points[leader.player.id];
+      if (myPts && myPts.avg !== null && myPts.count >= 1) {
+        leaderStat = `${myPts.avg.toFixed(1)} avg pts · ${myPts.count} ${myPts.count === 1 ? 'day' : 'days'}`;
+      } else {
+        const parts = [];
+        if (leader.stats.miniAvg !== null) parts.push(`Mini avg ${fmtScore(leader.stats.miniAvg, 'mini')}`);
+        if (leader.stats.mapAvg !== null) parts.push(`Maptap avg ${fmtScore(leader.stats.mapAvg, 'maptap')}`);
+        leaderStat = parts.length ? parts.join(' · ') : `${leader.stats.count} games played`;
+      }
     }
   }
 
@@ -990,15 +1015,13 @@ function renderRankRow(row, i, preview = false) {
       ? `Best ${fmtScore(s.mapBest, 'maptap')} · ${s.mapCount} scores`
       : `${s.count} games`;
   } else {
-    // All Games: show placement points as primary, or "—" if no shared days yet
-    const points = computePlacementPoints();
-    const pts = points[p.id];
-    if (pts && pts.avg !== null && pts.count > 0) {
-      primary = pts.avg.toFixed(1);
-      primaryLabel = 'pts';
-    } else {
-      // No shared-day data yet — show something useful instead of "—"
-      if (s.miniAvg !== null) {
+    // All Games — H2H stats for 2 players, points for 3+
+    if (useH2HMode()) {
+      const totalGames = s.wins + s.losses + s.ties;
+      if (totalGames > 0) {
+        primary = `${s.winPct}`;
+        primaryLabel = '%';
+      } else if (s.miniAvg !== null) {
         primary = fmtScore(s.miniAvg, 'mini');
         primaryLabel = 'Mini avg';
       } else if (s.mapAvg !== null) {
@@ -1008,6 +1031,24 @@ function renderRankRow(row, i, preview = false) {
         primary = '—';
         primaryLabel = '';
       }
+    } else {
+      // 3+ players: placement points (higher = better)
+      const points = computePlacementPoints();
+      const pts = points[p.id];
+      if (pts && pts.avg !== null && pts.count > 0) {
+        primary = pts.avg.toFixed(1);
+        primaryLabel = 'pts';
+      } else if (s.miniAvg !== null) {
+        primary = fmtScore(s.miniAvg, 'mini');
+        primaryLabel = 'Mini avg';
+      } else if (s.mapAvg !== null) {
+        primary = fmtScore(s.mapAvg, 'maptap');
+        primaryLabel = 'Maptap avg';
+      } else {
+        primary = '—';
+        primaryLabel = '';
+      }
+    }
     }
     const parts = [];
     if (s.miniBest !== null) parts.push(`Mini ${fmtScore(s.miniBest, 'mini')}`);
@@ -1065,10 +1106,20 @@ function renderLeaderboard() {
     `;
   }
 
-  // Helper text for ranking method
-  const sortLabel = isAll
-    ? 'Sorted by placement points · lower is better'
-    : (state.game === 'mini' ? 'Sorted by average time · lower is better' : 'Sorted by average score · higher is better');
+  // Helper text for ranking method (varies by mode)
+  let sortLabel;
+  if (isAll) {
+    sortLabel = useH2HMode()
+      ? 'Sorted by head-to-head win rate'
+      : 'Sorted by placement points · higher is better';
+  } else if (state.game === 'mini') {
+    sortLabel = 'Sorted by average time · lower is better';
+  } else {
+    sortLabel = 'Sorted by average score · higher is better';
+  }
+
+  // For All Games leaderboard: H2H columns when 2 players, points columns when 3+
+  const allColumnsH2H = isAll && useH2HMode();
 
   return `
     <div class="section-head" style="margin-top:0">
@@ -1082,29 +1133,46 @@ function renderLeaderboard() {
       <div class="lb-head-row${isAll ? ' lb-head-all' : ''}">
         <span style="text-align:center">#</span>
         <span>Player</span>
-        ${isAll
-          ? `<span class="right">Pts</span><span class="right">Avg Mini</span><span class="right">Avg Maptap</span><span class="right">Days</span>`
-          : `<span class="right">Avg</span><span class="right">Best</span><span class="right">Scores</span><span class="right">Days</span>`}
+        ${allColumnsH2H
+          ? `<span class="right">Win %</span><span class="right">W–L–T</span><span class="right">Avg Mini</span><span class="right">Avg Maptap</span>`
+          : isAll
+            ? `<span class="right">Pts</span><span class="right">Avg Mini</span><span class="right">Avg Maptap</span><span class="right">Days</span>`
+            : `<span class="right">Avg</span><span class="right">Best</span><span class="right">Scores</span><span class="right">Days</span>`}
       </div>
       ${r.map((row, i) => {
         const { player: p, stats: s, streak: str } = row;
         const rankCls = i === 0 ? 'r1' : i === 1 ? 'r2' : i === 2 ? 'r3' : '';
         const rowCls = i === 0 ? 'lb-row-full first' : 'lb-row-full';
         const ptsForP = points && points[p.id];
-        const cols = isAll
-          ? `<div class="rank-stat primary">${ptsForP && ptsForP.avg !== null ? ptsForP.avg.toFixed(1) : '—'}</div>
+        let cols;
+        if (allColumnsH2H) {
+          // 2 players, All Games: Win % | W-L-T | Avg Mini | Avg Maptap
+          cols = `<div class="rank-stat primary">${s.winPct}%</div>
+             <div class="rank-stat">${s.wins}–${s.losses}${s.ties ? `–${s.ties}` : ''}</div>
+             <div class="rank-stat muted">${s.miniAvg !== null ? fmtScore(s.miniAvg, 'mini') : '—'}</div>
+             <div class="rank-stat muted">${s.mapAvg !== null ? fmtScore(s.mapAvg, 'maptap') : '—'}</div>`;
+        } else if (isAll) {
+          // 3+ players, All Games: Pts | Avg Mini | Avg Maptap | Days
+          cols = `<div class="rank-stat primary">${ptsForP && ptsForP.avg !== null ? ptsForP.avg.toFixed(1) : '—'}</div>
              <div class="rank-stat muted">${s.miniAvg !== null ? fmtScore(s.miniAvg, 'mini') : '—'}</div>
              <div class="rank-stat muted">${s.mapAvg !== null ? fmtScore(s.mapAvg, 'maptap') : '—'}</div>
-             <div class="rank-stat">${ptsForP ? ptsForP.count : 0}</div>`
-          : `<div class="rank-stat primary">${s.avg !== null ? fmtScore(s.avg, state.game) : '—'}</div>
+             <div class="rank-stat">${ptsForP ? ptsForP.count : 0}</div>`;
+        } else {
+          // Focused tab: Avg | Best | Scores | Days
+          cols = `<div class="rank-stat primary">${s.avg !== null ? fmtScore(s.avg, state.game) : '—'}</div>
              <div class="rank-stat" style="color:var(--gold-deep);font-weight:600">${s.best !== null ? fmtScore(s.best, state.game) : '—'}</div>
              <div class="rank-stat muted">${s.count}</div>
              <div class="rank-stat">${countSharedDays(p.id, state.game)}</div>`;
-        const subtitleParts = [];
-        if (str >= 2) subtitleParts.push(`${str} streak`);
-        const subtitle = isAll
-          ? (ptsForP && ptsForP.count > 0 ? `${ptsForP.count} shared ${ptsForP.count === 1 ? 'day' : 'days'}` : 'no shared days yet')
-          : `${s.count} ${s.count === 1 ? 'score' : 'scores'} logged`;
+        }
+        let subtitle;
+        if (allColumnsH2H) {
+          const total = s.wins + s.losses + s.ties;
+          subtitle = total > 0 ? `${total} shared ${total === 1 ? 'day' : 'days'}` : 'no shared days yet';
+        } else if (isAll) {
+          subtitle = ptsForP && ptsForP.count > 0 ? `${ptsForP.count} shared ${ptsForP.count === 1 ? 'day' : 'days'}` : 'no shared days yet';
+        } else {
+          subtitle = `${s.count} ${s.count === 1 ? 'score' : 'scores'} logged`;
+        }
         return `<div class="${rowCls}${isAll ? ' lb-row-all' : ''}">
           <div class="rank-num ${rankCls}">${i + 1}</div>
           <div class="rank-player">
