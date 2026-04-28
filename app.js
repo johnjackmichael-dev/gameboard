@@ -975,18 +975,32 @@ function renderDashboard() {
   const totalDays = [...new Set(fs.map(s => s.played_on))].length;
   const activePlayers = state.players.filter(p => fs.some(s => s.player_id === p.id)).length;
 
-  // Last 7 day wins
-  const sevenAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+  // Last 7 days — count head-to-head wins where you beat at least one other
+  // player on a same-game/same-day matchup. Uses local time, not UTC.
+  const sevenAgo = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 6); // 6 days ago + today = 7-day window
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  })();
+
   const recentWins = state.players.map(p => {
     let wins = 0;
-    const recent = fs.filter(s => s.played_on >= sevenAgo);
-    const dates = [...new Set(recent.map(s => s.played_on))];
-    dates.forEach(d => {
-      const mine = recent.find(s => s.player_id === p.id && s.played_on === d);
-      const others = recent.filter(s => s.player_id !== p.id && s.played_on === d);
-      if (!mine || !others.length) return;
-      const won = others.every(o => isMini ? mine.score < o.score : mine.score > o.score);
-      if (won) wins++;
+    const myRecent = fs.filter(s => s.player_id === p.id && s.played_on >= sevenAgo);
+    myRecent.forEach(mine => {
+      // Find opponents who logged the SAME game on the SAME day
+      const opponents = fs.filter(s =>
+        s.player_id !== p.id &&
+        s.game === mine.game &&
+        s.played_on === mine.played_on
+      );
+      if (!opponents.length) return; // no contest, doesn't count
+      const myGameIsMini = mine.game === 'mini';
+      // Award a win if you beat ALL opponents that day for this game
+      const wonAll = opponents.every(o => myGameIsMini ? mine.score < o.score : mine.score > o.score);
+      if (wonAll) wins++;
     });
     return { player: p, wins };
   }).sort((a, b) => b.wins - a.wins);
