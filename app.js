@@ -283,22 +283,31 @@ function playerStats(pid) {
   const isMini = state.game !== 'maptap';
   const vals = ps.map(s => s.score);
 
-  // Head-to-head: only compare same-game scores on the same day.
-  // Bugs avoided: (1) cross-game comparisons (Mini vs Maptap) and
-  // (2) only counting first score per day when a player has multiple games on that date.
+  // W-L-T: for each game-day with 2+ players, did this player get first place?
+  // - 1st outright: Win
+  // - Tied for 1st with others: Tie (everyone tied at top gets a T)
+  // - Anywhere else: Loss
+  // - Solo days (only 1 player): no contest, doesn't count
   let wins = 0, losses = 0, ties = 0;
   ps.forEach(mine => {
-    const others = filteredScores().filter(s =>
-      s.player_id !== pid &&
+    const dayScores = filteredScores().filter(s =>
       s.played_on === mine.played_on &&
       s.game === mine.game
     );
-    others.forEach(o => {
-      const myGameIsMini = mine.game === 'mini';
-      if (mine.score === o.score) ties++;
-      else if (myGameIsMini ? mine.score < o.score : mine.score > o.score) wins++;
-      else losses++;
-    });
+    if (dayScores.length < 2) return; // no contest
+    const myGameIsMini = mine.game === 'mini';
+    // Find the best score for that day in that game
+    const bestScore = myGameIsMini
+      ? Math.min(...dayScores.map(s => s.score))
+      : Math.max(...dayScores.map(s => s.score));
+    if (mine.score !== bestScore) {
+      losses++;
+      return;
+    }
+    // I matched the best — am I alone at the top, or tied?
+    const tiedAtTop = dayScores.filter(s => s.score === bestScore).length;
+    if (tiedAtTop === 1) wins++;
+    else ties++;
   });
   const total = wins + losses + ties;
 
@@ -324,31 +333,31 @@ function playerStats(pid) {
 }
 
 function streak(pid) {
-  // A "win day" is a day where the player won every shared comparison
-  // (same game, same day, against any other player).
+  // A "win day" is a day where this player got first place (outright) on
+  // every game they played that day.
   const dates = [...new Set(filteredScores().map(s => s.played_on))].sort((a, b) => b.localeCompare(a));
   let n = 0;
   for (const date of dates) {
     const myScores = filteredScores().filter(s => s.player_id === pid && s.played_on === date);
     if (!myScores.length) { if (n > 0) break; continue; }
-    // Did I have at least one head-to-head matchup, and did I win every one?
-    let hadMatchup = false;
+    let hadContest = false;
     let wonAll = true;
     for (const mine of myScores) {
-      const others = filteredScores().filter(s =>
-        s.player_id !== pid &&
+      const dayScores = filteredScores().filter(s =>
         s.played_on === date &&
         s.game === mine.game
       );
-      for (const o of others) {
-        hadMatchup = true;
-        const myGameIsMini = mine.game === 'mini';
-        const won = myGameIsMini ? mine.score < o.score : mine.score > o.score;
-        if (!won) { wonAll = false; break; }
-      }
-      if (!wonAll) break;
+      if (dayScores.length < 2) continue; // no contest, skip
+      hadContest = true;
+      const myGameIsMini = mine.game === 'mini';
+      const bestScore = myGameIsMini
+        ? Math.min(...dayScores.map(s => s.score))
+        : Math.max(...dayScores.map(s => s.score));
+      // Outright winner means: my score is the best AND I'm not tied with anyone else
+      const tiedAtTop = dayScores.filter(s => s.score === bestScore).length;
+      if (mine.score !== bestScore || tiedAtTop > 1) { wonAll = false; break; }
     }
-    if (!hadMatchup) { if (n > 0) break; continue; }
+    if (!hadContest) { if (n > 0) break; continue; }
     if (wonAll) n++; else if (n > 0) break;
   }
   return n;
@@ -380,33 +389,13 @@ function ranked() {
     });
   }
 
-  // All Games — choose method based on active player count.
-  // 2 players: head-to-head (intuitive for a duel).
-  // 3+ players: placement points (1st=3, 2nd=2, 3rd=1; higher = better).
-  if (rows.length <= 2) {
-    // H2H ranking — sort by win percentage on shared days
-    return rows.sort((a, b) => {
-      // Win % tiebreaks: more total games played, then alphabetical
-      if (b.stats.winPct !== a.stats.winPct) return b.stats.winPct - a.stats.winPct;
-      if (b.stats.wins !== a.stats.wins) return b.stats.wins - a.stats.wins;
-      return a.player.name.localeCompare(b.player.name);
-    });
-  }
-
-  // 3+ players: use placement points (higher = better)
-  const points = computePlacementPoints();
+  // All Games — rank by total wins (first-place-only counts as W).
+  // Tiebreakers: higher win %, then more total games played, then alphabetical.
   return rows.sort((a, b) => {
-    const ap = points[a.player.id];
-    const bp = points[b.player.id];
-    const aHas = ap && ap.count > 0;
-    const bHas = bp && bp.count > 0;
-    if (aHas && bHas) return bp.avg - ap.avg; // higher avg pts = better
-    if (aHas && !bHas) return -1;
-    if (!aHas && bHas) return 1;
-    // Neither has shared days — fall back to per-game averages
-    const aScore = soloPerformanceScore(a, rows);
-    const bScore = soloPerformanceScore(b, rows);
-    return aScore - bScore; // lower rank-position = better
+    if (b.stats.wins !== a.stats.wins) return b.stats.wins - a.stats.wins;
+    if (b.stats.winPct !== a.stats.winPct) return b.stats.winPct - a.stats.winPct;
+    if (b.stats.count !== a.stats.count) return b.stats.count - a.stats.count;
+    return a.player.name.localeCompare(b.player.name);
   });
 }
 
@@ -548,14 +537,16 @@ function renderTodayCard(game, today, players) {
   // Get today's scores for this game
   const todayScores = state.scores.filter(s => s.played_on === today && s.game === game);
 
-  // Determine the leader (lowest Mini, highest Maptap)
-  let winnerId = null;
-  if (todayScores.length >= 1) {
-    const sorted = [...todayScores].sort((a, b) => isMini ? a.score - b.score : b.score - a.score);
-    // Only mark a winner if there are 2+ scores (otherwise it's "no contest")
-    if (todayScores.length >= 2 && sorted[0].score !== sorted[1].score) {
-      winnerId = sorted[0].player_id;
-    }
+  // Determine the leaders — outright first place, OR all players tied for top.
+  // Returns a Set of winning player_ids. Empty if no contest.
+  const winnerIds = new Set();
+  if (todayScores.length >= 2) {
+    const bestScore = isMini
+      ? Math.min(...todayScores.map(s => s.score))
+      : Math.max(...todayScores.map(s => s.score));
+    todayScores.forEach(s => {
+      if (s.score === bestScore) winnerIds.add(s.player_id);
+    });
   }
 
   const playedCount = todayScores.length;
@@ -573,7 +564,7 @@ function renderTodayCard(game, today, players) {
       <div class="today-card-rows">
         ${players.map(p => {
           const score = todayScores.find(s => s.player_id === p.id);
-          const isWinner = winnerId === p.id;
+          const isWinner = winnerIds.has(p.id);
           const cls = isWinner ? 'today-row today-row-winner' : 'today-row';
           const valueHTML = score
             ? `<span class="today-row-val">${fmtScore(score.score, game)}${score.source === 'email' ? ' <span class="today-email">✉</span>' : ''}</span>`
@@ -641,23 +632,23 @@ function streakStartDate(pid) {
   for (const date of dates) {
     const myScores = filteredScores().filter(s => s.player_id === pid && s.played_on === date);
     if (!myScores.length) continue;
-    let hadMatchup = false;
+    let hadContest = false;
     let wonAll = true;
     for (const mine of myScores) {
-      const others = filteredScores().filter(s =>
-        s.player_id !== pid &&
+      const dayScores = filteredScores().filter(s =>
         s.played_on === date &&
         s.game === mine.game
       );
-      for (const o of others) {
-        hadMatchup = true;
-        const myGameIsMini = mine.game === 'mini';
-        const won = myGameIsMini ? mine.score < o.score : mine.score > o.score;
-        if (!won) { wonAll = false; break; }
-      }
-      if (!wonAll) break;
+      if (dayScores.length < 2) continue;
+      hadContest = true;
+      const myGameIsMini = mine.game === 'mini';
+      const bestScore = myGameIsMini
+        ? Math.min(...dayScores.map(s => s.score))
+        : Math.max(...dayScores.map(s => s.score));
+      const tiedAtTop = dayScores.filter(s => s.score === bestScore).length;
+      if (mine.score !== bestScore || tiedAtTop > 1) { wonAll = false; break; }
     }
-    if (!hadMatchup) continue;
+    if (!hadContest) continue;
     if (wonAll) lastWinDate = date;
     else break;
   }
@@ -975,11 +966,11 @@ function renderDashboard() {
   const totalDays = [...new Set(fs.map(s => s.played_on))].length;
   const activePlayers = state.players.filter(p => fs.some(s => s.player_id === p.id)).length;
 
-  // Last 7 days — count head-to-head wins where you beat at least one other
-  // player on a same-game/same-day matchup. Uses local time, not UTC.
+  // Last 7 days — count first-place wins per game (only counts contested days).
+  // Uses local time, not UTC.
   const sevenAgo = (() => {
     const d = new Date();
-    d.setDate(d.getDate() - 6); // 6 days ago + today = 7-day window
+    d.setDate(d.getDate() - 6);
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
@@ -990,17 +981,18 @@ function renderDashboard() {
     let wins = 0;
     const myRecent = fs.filter(s => s.player_id === p.id && s.played_on >= sevenAgo);
     myRecent.forEach(mine => {
-      // Find opponents who logged the SAME game on the SAME day
-      const opponents = fs.filter(s =>
-        s.player_id !== p.id &&
+      const dayScores = fs.filter(s =>
         s.game === mine.game &&
         s.played_on === mine.played_on
       );
-      if (!opponents.length) return; // no contest, doesn't count
+      if (dayScores.length < 2) return; // no contest
       const myGameIsMini = mine.game === 'mini';
-      // Award a win if you beat ALL opponents that day for this game
-      const wonAll = opponents.every(o => myGameIsMini ? mine.score < o.score : mine.score > o.score);
-      if (wonAll) wins++;
+      const bestScore = myGameIsMini
+        ? Math.min(...dayScores.map(s => s.score))
+        : Math.max(...dayScores.map(s => s.score));
+      // Outright first place
+      const tiedAtTop = dayScores.filter(s => s.score === bestScore).length;
+      if (mine.score === bestScore && tiedAtTop === 1) wins++;
     });
     return { player: p, wins };
   }).sort((a, b) => b.wins - a.wins);
@@ -1068,29 +1060,15 @@ function renderDashboard() {
       ? `Avg ${fmtScore(leader.stats.mapAvg, 'maptap')} · ${leader.stats.mapCount} ${leader.stats.mapCount === 1 ? 'score' : 'scores'}`
       : 'No Maptap scores yet';
   } else {
-    // All Games — H2H mode for 2 players, points for 3+
-    if (useH2HMode()) {
-      if (leader.stats.wins + leader.stats.losses + leader.stats.ties > 0) {
-        leaderStat = `${leader.stats.winPct}% win rate · ${leader.stats.wins}W–${leader.stats.losses}L${leader.stats.ties ? `–${leader.stats.ties}T` : ''}`;
-      } else {
-        // No shared-day data — show solo summary
-        const parts = [];
-        if (leader.stats.miniAvg !== null) parts.push(`Mini avg ${fmtScore(leader.stats.miniAvg, 'mini')}`);
-        if (leader.stats.mapAvg !== null) parts.push(`Maptap avg ${fmtScore(leader.stats.mapAvg, 'maptap')}`);
-        leaderStat = parts.length ? parts.join(' · ') : `${leader.stats.count} games played`;
-      }
+    // All Games — always W-L based on first-place daily wins
+    if (leader.stats.wins + leader.stats.losses + leader.stats.ties > 0) {
+      leaderStat = `${leader.stats.wins} ${leader.stats.wins === 1 ? 'win' : 'wins'} · ${leader.stats.wins}W–${leader.stats.losses}L${leader.stats.ties ? `–${leader.stats.ties}T` : ''}`;
     } else {
-      // 3+ players: placement points (higher = better)
-      const points = computePlacementPoints();
-      const myPts = points[leader.player.id];
-      if (myPts && myPts.avg !== null && myPts.count >= 1) {
-        leaderStat = `${myPts.avg.toFixed(1)} avg pts · ${myPts.count} ${myPts.count === 1 ? 'day' : 'days'}`;
-      } else {
-        const parts = [];
-        if (leader.stats.miniAvg !== null) parts.push(`Mini avg ${fmtScore(leader.stats.miniAvg, 'mini')}`);
-        if (leader.stats.mapAvg !== null) parts.push(`Maptap avg ${fmtScore(leader.stats.mapAvg, 'maptap')}`);
-        leaderStat = parts.length ? parts.join(' · ') : `${leader.stats.count} games played`;
-      }
+      // No contested games yet — show solo summary
+      const parts = [];
+      if (leader.stats.miniAvg !== null) parts.push(`Mini avg ${fmtScore(leader.stats.miniAvg, 'mini')}`);
+      if (leader.stats.mapAvg !== null) parts.push(`Maptap avg ${fmtScore(leader.stats.mapAvg, 'maptap')}`);
+      leaderStat = parts.length ? parts.join(' · ') : `${leader.stats.count} games played`;
     }
   }
 
@@ -1194,39 +1172,20 @@ function renderRankRow(row, i, preview = false) {
       ? `Best ${fmtScore(s.mapBest, 'maptap')} · ${s.mapCount} scores`
       : `${s.count} games`;
   } else {
-    // All Games — H2H stats for 2 players, points for 3+
-    if (useH2HMode()) {
-      const totalGames = s.wins + s.losses + s.ties;
-      if (totalGames > 0) {
-        primary = `${s.winPct}`;
-        primaryLabel = '%';
-      } else if (s.miniAvg !== null) {
-        primary = fmtScore(s.miniAvg, 'mini');
-        primaryLabel = 'Mini avg';
-      } else if (s.mapAvg !== null) {
-        primary = fmtScore(s.mapAvg, 'maptap');
-        primaryLabel = 'Maptap avg';
-      } else {
-        primary = '—';
-        primaryLabel = '';
-      }
+    // All Games — show total wins
+    const totalGames = s.wins + s.losses + s.ties;
+    if (totalGames > 0) {
+      primary = `${s.wins}`;
+      primaryLabel = s.wins === 1 ? 'win' : 'wins';
+    } else if (s.miniAvg !== null) {
+      primary = fmtScore(s.miniAvg, 'mini');
+      primaryLabel = 'Mini avg';
+    } else if (s.mapAvg !== null) {
+      primary = fmtScore(s.mapAvg, 'maptap');
+      primaryLabel = 'Maptap avg';
     } else {
-      // 3+ players: placement points (higher = better)
-      const points = computePlacementPoints();
-      const pts = points[p.id];
-      if (pts && pts.avg !== null && pts.count > 0) {
-        primary = pts.avg.toFixed(1);
-        primaryLabel = 'pts';
-      } else if (s.miniAvg !== null) {
-        primary = fmtScore(s.miniAvg, 'mini');
-        primaryLabel = 'Mini avg';
-      } else if (s.mapAvg !== null) {
-        primary = fmtScore(s.mapAvg, 'maptap');
-        primaryLabel = 'Maptap avg';
-      } else {
-        primary = '—';
-        primaryLabel = '';
-      }
+      primary = '—';
+      primaryLabel = '';
     }
     const parts = [];
     if (s.miniBest !== null) parts.push(`Mini ${fmtScore(s.miniBest, 'mini')}`);
@@ -1262,7 +1221,6 @@ function renderLeaderboard() {
   if (!r.length) return renderEmptyDashboard();
 
   const isAll = state.game === 'all';
-  const points = isAll ? computePlacementPoints() : null;
 
   // Mode toggle (Standings vs Head-to-Head) — only useful with 2+ players
   const modeToggle = state.players.length >= 2 ? `
@@ -1284,20 +1242,15 @@ function renderLeaderboard() {
     `;
   }
 
-  // Helper text for ranking method (varies by mode)
+  // Helper text for ranking method
   let sortLabel;
   if (isAll) {
-    sortLabel = useH2HMode()
-      ? 'Sorted by head-to-head win rate'
-      : 'Sorted by placement points · higher is better';
+    sortLabel = 'Sorted by total wins · 1st place each day = a win';
   } else if (state.game === 'mini') {
     sortLabel = 'Sorted by average time · lower is better';
   } else {
     sortLabel = 'Sorted by average score · higher is better';
   }
-
-  // For All Games leaderboard: H2H columns when 2 players, points columns when 3+
-  const allColumnsH2H = isAll && useH2HMode();
 
   return `
     <div class="section-head" style="margin-top:0">
@@ -1311,30 +1264,21 @@ function renderLeaderboard() {
       <div class="lb-head-row${isAll ? ' lb-head-all' : ''}">
         <span style="text-align:center">#</span>
         <span>Player</span>
-        ${allColumnsH2H
-          ? `<span class="right">Win %</span><span class="right">W–L–T</span><span class="right">Avg Mini</span><span class="right">Avg Maptap</span>`
-          : isAll
-            ? `<span class="right">Pts</span><span class="right">Avg Mini</span><span class="right">Avg Maptap</span><span class="right">Days</span>`
-            : `<span class="right">Avg</span><span class="right">Best</span><span class="right">Scores</span><span class="right">Days</span>`}
+        ${isAll
+          ? `<span class="right">Wins</span><span class="right">W–L–T</span><span class="right">Avg Mini</span><span class="right">Avg Maptap</span>`
+          : `<span class="right">Avg</span><span class="right">Best</span><span class="right">Scores</span><span class="right">Days</span>`}
       </div>
       ${r.map((row, i) => {
         const { player: p, stats: s, streak: str } = row;
         const rankCls = i === 0 ? 'r1' : i === 1 ? 'r2' : i === 2 ? 'r3' : '';
         const rowCls = i === 0 ? 'lb-row-full first' : 'lb-row-full';
-        const ptsForP = points && points[p.id];
         let cols;
-        if (allColumnsH2H) {
-          // 2 players, All Games: Win % | W-L-T | Avg Mini | Avg Maptap
-          cols = `<div class="rank-stat primary">${s.winPct}%</div>
+        if (isAll) {
+          // All Games: Wins | W-L-T | Avg Mini | Avg Maptap
+          cols = `<div class="rank-stat primary">${s.wins}</div>
              <div class="rank-stat">${s.wins}–${s.losses}${s.ties ? `–${s.ties}` : ''}</div>
              <div class="rank-stat muted">${s.miniAvg !== null ? fmtScore(s.miniAvg, 'mini') : '—'}</div>
              <div class="rank-stat muted">${s.mapAvg !== null ? fmtScore(s.mapAvg, 'maptap') : '—'}</div>`;
-        } else if (isAll) {
-          // 3+ players, All Games: Pts | Avg Mini | Avg Maptap | Days
-          cols = `<div class="rank-stat primary">${ptsForP && ptsForP.avg !== null ? ptsForP.avg.toFixed(1) : '—'}</div>
-             <div class="rank-stat muted">${s.miniAvg !== null ? fmtScore(s.miniAvg, 'mini') : '—'}</div>
-             <div class="rank-stat muted">${s.mapAvg !== null ? fmtScore(s.mapAvg, 'maptap') : '—'}</div>
-             <div class="rank-stat">${ptsForP ? ptsForP.count : 0}</div>`;
         } else {
           // Focused tab: Avg | Best | Scores | Days
           cols = `<div class="rank-stat primary">${s.avg !== null ? fmtScore(s.avg, state.game) : '—'}</div>
@@ -1343,11 +1287,9 @@ function renderLeaderboard() {
              <div class="rank-stat">${countSharedDays(p.id, state.game)}</div>`;
         }
         let subtitle;
-        if (allColumnsH2H) {
+        if (isAll) {
           const total = s.wins + s.losses + s.ties;
-          subtitle = total > 0 ? `${total} shared ${total === 1 ? 'day' : 'days'}` : 'no shared days yet';
-        } else if (isAll) {
-          subtitle = ptsForP && ptsForP.count > 0 ? `${ptsForP.count} shared ${ptsForP.count === 1 ? 'day' : 'days'}` : 'no shared days yet';
+          subtitle = total > 0 ? `${total} games counted` : 'no contested games yet';
         } else {
           subtitle = `${s.count} ${s.count === 1 ? 'score' : 'scores'} logged`;
         }
@@ -1400,19 +1342,23 @@ function renderDailyResultsForGame(game) {
   const isMini = game === 'mini';
   const gameLabel = isMini ? 'NYT Mini' : 'Maptap';
 
-  // For each date, figure out who won (or if it was a no-contest)
-  const dayWinners = {}; // date -> winner player_id (or 'tie' or null)
+  // For each date, figure out who won (or if it was a no-contest).
+  // dayWinners[date] = { type: 'win'|'tie'|'none', winnerIds: [...] }
+  const dayWinners = {};
   dates.forEach(date => {
     const dayScores = gameScores.filter(s => s.played_on === date);
     if (dayScores.length < 2) {
-      dayWinners[date] = null; // no contest
+      dayWinners[date] = { type: 'none', winnerIds: [] };
       return;
     }
-    const sorted = [...dayScores].sort((a, b) => isMini ? a.score - b.score : b.score - a.score);
-    if (sorted[0].score === sorted[1].score) {
-      dayWinners[date] = 'tie';
+    const bestScore = isMini
+      ? Math.min(...dayScores.map(s => s.score))
+      : Math.max(...dayScores.map(s => s.score));
+    const topPlayers = dayScores.filter(s => s.score === bestScore).map(s => s.player_id);
+    if (topPlayers.length === 1) {
+      dayWinners[date] = { type: 'win', winnerIds: topPlayers };
     } else {
-      dayWinners[date] = sorted[0].player_id;
+      dayWinners[date] = { type: 'tie', winnerIds: topPlayers };
     }
   });
 
@@ -1438,18 +1384,26 @@ function renderDailyResultsForGame(game) {
                 </td>
                 ${dates.map(d => {
                   const score = gameScores.find(s => s.player_id === p.id && s.played_on === d);
-                  const winner = dayWinners[d];
-                  const dayScores = gameScores.filter(s => s.played_on === d);
-                  const noContest = dayScores.length < 2;
+                  const winnerInfo = dayWinners[d];
                   if (!score) {
                     return `<td class="daily-cell daily-empty" title="No score">—</td>`;
                   }
                   let cls = 'daily-cell';
-                  if (noContest) cls += ' daily-no-contest';
-                  else if (winner === 'tie') cls += ' daily-tie';
-                  else if (winner === p.id) cls += ' daily-winner';
-                  else cls += ' daily-loser';
-                  const tooltip = noContest ? 'No contest (only player)' : (winner === 'tie' ? 'Tied' : winner === p.id ? 'Winner' : 'Lost');
+                  let tooltip = '';
+                  const isOnTop = winnerInfo.winnerIds.includes(p.id);
+                  if (winnerInfo.type === 'none') {
+                    cls += ' daily-no-contest';
+                    tooltip = 'No contest (only player)';
+                  } else if (winnerInfo.type === 'tie' && isOnTop) {
+                    cls += ' daily-tie';
+                    tooltip = 'Tied for first';
+                  } else if (winnerInfo.type === 'win' && isOnTop) {
+                    cls += ' daily-winner';
+                    tooltip = 'Winner';
+                  } else {
+                    cls += ' daily-loser';
+                    tooltip = 'Lost';
+                  }
                   return `<td class="${cls}" title="${tooltip}">${fmtScore(score.score, game)}${score.source === 'email' ? '<span class="daily-email-tag">✉</span>' : ''}</td>`;
                 }).join('')}
               </tr>
